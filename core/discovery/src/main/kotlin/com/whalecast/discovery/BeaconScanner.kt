@@ -32,8 +32,19 @@ data class DiscoveredDevice(
  */
 class BeaconScanner(
     private val scope: CoroutineScope,
-    private val port: Int = Beacon.UDP_PORT,
+    requestedPort: Int = Beacon.UDP_PORT,
 ) {
+    private val port: Int = requestedPort
+
+    /**
+     * 实际绑定的端口。传 0 时由系统分配。
+     *
+     * 测试与"默认端口被占"的场景都依赖它 —— 自己猜一个"空闲端口"的写法
+     * 在受限网络环境下会拿到 `-1`，进而抛出 `port out of range:-1`。
+     */
+    @Volatile
+    var localPort: Int = -1
+        private set
 
     private val _devices = MutableStateFlow<Map<String, DiscoveredDevice>>(emptyMap())
 
@@ -62,6 +73,7 @@ class BeaconScanner(
                     bind(InetSocketAddress(port))
                 }
                 socket = localSocket
+                localPort = localSocket.localPort
                 val buffer = ByteArray(512)
                 while (isActive) {
                     val packet = DatagramPacket(buffer, buffer.size)
@@ -80,6 +92,17 @@ class BeaconScanner(
                 runCatching { localSocket?.close() }
             }
         }
+    }
+
+    /** 等待监听真正就绪（端口绑定完成）。传 0 端口时尤其需要它。 */
+    suspend fun awaitReady(timeoutMillis: Long = 3_000): Boolean {
+        val deadline = System.currentTimeMillis() + timeoutMillis
+        while (System.currentTimeMillis() < deadline) {
+            if (localPort > 0) return true
+            if (failureReason != null) return false
+            delay(50)
+        }
+        return localPort > 0
     }
 
     /** 按连接码等待设备出现（广播有周期，需要给一点时间）。 */

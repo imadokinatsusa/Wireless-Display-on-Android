@@ -49,8 +49,17 @@ class BeaconUdpTest {
             return@runBlocking
         }
 
-        val port = freeUdpPort()
         val beacon = Beacon(code = "ABC234", tcpPort = 47_921, deviceName = "测试设备", token = "aabbcc")
+
+        // 端口交给系统分配（传 0）再读回实际端口：
+        // 自己"猜一个空闲端口"在受限网络下会拿到 -1，这正是之前失败的原因。
+        val scanner = BeaconScanner(scope = this, port = 0)
+        scanner.start()
+        assertTrue(
+            scanner.awaitReady(),
+            "扫描器应完成端口绑定；原因=${scanner.failureReason}",
+        )
+        val port = scanner.localPort
 
         val broadcaster = BeaconBroadcaster(
             scope = this,
@@ -59,10 +68,8 @@ class BeaconUdpTest {
             intervalMillis = 50,
             targets = listOf("127.0.0.1"),
         )
-        val scanner = BeaconScanner(scope = this, port = port)
 
         try {
-            scanner.start()
             broadcaster.start()
 
             // 用带空格/小写/短横线的输入，顺便验证规范化
@@ -89,8 +96,7 @@ class BeaconUdpTest {
 
     @Test
     fun `输入不存在的码会超时返回 null 而不是卡死`() = runBlocking {
-        val port = freeUdpPort()
-        val scanner = BeaconScanner(scope = this, port = port)
+        val scanner = BeaconScanner(scope = this, port = 0)
         try {
             scanner.start()
             val found = scanner.resolve("ZZZ999", timeoutMillis = 600)
@@ -102,8 +108,7 @@ class BeaconUdpTest {
 
     @Test
     fun `停止后不再报告运行状态`() = runBlocking {
-        val port = freeUdpPort()
-        val scanner = BeaconScanner(scope = this, port = port)
+        val scanner = BeaconScanner(scope = this, port = 0)
         scanner.start()
         assertTrue(scanner.running)
         scanner.stop()
