@@ -160,9 +160,17 @@ object TcpTransports {
         TcpTransport(scope, socket)
     }
 
-    /** 接收端：监听端口，等待发送端连入。 */
+    /** 接收端：监听端口，等待发送端连入。端口被占时抛异常。 */
     fun listen(port: Int = DEFAULT_CAST_PORT, scope: CoroutineScope): TcpServer =
         TcpServer(ServerSocket(port).apply { reuseAddress = true }, scope)
+
+    /**
+     * 与 [listen] 相同，但**监听失败返回 null 而不是抛异常**。
+     *
+     * UI 层用它就能把"端口被占用"变成一句可读提示，而不是一次闪退。
+     */
+    fun listenOrNull(port: Int = DEFAULT_CAST_PORT, scope: CoroutineScope): TcpServer? =
+        runCatching { listen(port, scope) }.getOrNull()
 }
 
 /** 监听中的接收端。 */

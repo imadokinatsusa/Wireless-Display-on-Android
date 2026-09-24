@@ -30,9 +30,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.whalecast.app.CrashReporter
 import com.whalecast.app.DemoUiState
 import com.whalecast.app.LoopbackDemoViewModel
 import com.whalecast.session.StatsSnapshot
@@ -68,6 +70,10 @@ private fun HomeScreen(
     onReceiver: () -> Unit,
     onLoopbackDemo: () -> Unit,
 ) {
+    val context = LocalContext.current
+    // 没有 adb 的环境里，崩溃堆栈只能靠这里"自首"
+    var lastCrash by remember { mutableStateOf(CrashReporter.read(context)) }
+
     Scaffold(topBar = { TopAppBar(title = { Text("WhaleCast") }) }) { padding ->
         Column(
             modifier = Modifier
@@ -78,6 +84,24 @@ private fun HomeScreen(
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             Text("Android ↔ Android 局域网投屏", style = MaterialTheme.typography.titleMedium)
+
+            lastCrash?.let { crash ->
+                Card {
+                    Column(
+                        modifier = Modifier.padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Text("上次崩溃记录（把这行以下内容发给开发者）", fontWeight = FontWeight.Bold)
+                        Text(text = crash.take(1500), style = MaterialTheme.typography.bodySmall)
+                        TextButton(onClick = {
+                            CrashReporter.clear(context)
+                            lastCrash = null
+                        }) {
+                            Text("看过了，清除")
+                        }
+                    }
+                }
+            }
 
             Card {
                 Column(

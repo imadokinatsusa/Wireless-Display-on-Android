@@ -67,10 +67,15 @@ fun SenderScreen(onBack: () -> Unit) {
     ) { result ->
         val data = result.data
         if (result.resultCode == Activity.RESULT_OK && data != null) {
+            val manager = context.getSystemService(MediaProjectionManager::class.java)
+            // 先拿到 MediaProjection（系统要求此刻已获得用户授权），再启动前台服务
+            val projection = runCatching { manager.getMediaProjection(result.resultCode, data) }
+                .getOrElse { error ->
+                    status = "获取投屏授权失败：${error.message ?: error::class.java.simpleName}"
+                    return@rememberLauncherForActivityResult
+                }
             // Android 14+：必须在 createVirtualDisplay 之前跑起 mediaProjection 前台服务
             CastForegroundService.start(context)
-            val manager = context.getSystemService(MediaProjectionManager::class.java)
-            val projection = manager.getMediaProjection(result.resultCode, data)
             val port = portText.toIntOrNull() ?: DEFAULT_CAST_PORT
             val newEngine = CastSenderEngine(scope, projection, spec)
             engine = newEngine

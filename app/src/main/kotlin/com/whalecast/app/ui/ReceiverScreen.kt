@@ -140,13 +140,16 @@ fun ReceiverScreen(onBack: () -> Unit) {
                     } else {
                         val newEngine = CastReceiverEngine(scope, port)
                         engine = newEngine
-                        // 把连接码广播到局域网，发送端输入码即可找到本机
+                        newEngine.startListening { status = it }
+                        listening = true
+                        // 广播里必须带"实际监听到的端口"：默认端口被占时会顺延
+                        val actualPort = newEngine.listeningPort()
                         val newBroadcaster = BeaconBroadcaster(
                             scope = scope,
                             beaconProvider = {
                                 Beacon(
                                     code = sessionCode,
-                                    tcpPort = port,
+                                    tcpPort = actualPort,
                                     deviceName = deviceName,
                                     token = token,
                                 )
@@ -154,8 +157,6 @@ fun ReceiverScreen(onBack: () -> Unit) {
                         )
                         broadcaster = newBroadcaster
                         newBroadcaster.start()
-                        listening = true
-                        newEngine.startListening { status = it }
                     }
                 },
                 modifier = Modifier.fillMaxWidth(),

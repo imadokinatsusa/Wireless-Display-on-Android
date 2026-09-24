@@ -69,7 +69,15 @@ class CastReceiverEngine(
 
     fun startListening(onStatus: (String) -> Unit) {
         if (server != null) return
-        val server = TcpTransports.listen(port, scope)
+        // 端口可能被别的进程占着（或上次会话没释放干净）：连续试几个端口，
+        // 全都失败也只是提示，绝不抛异常把 App 干掉 —— 这是接收端闪退的头号原因。
+        val server = (port until port + PORT_PROBE_COUNT).firstNotNullOfOrNull { candidate ->
+            TcpTransports.listenOrNull(candidate, scope)
+        }
+        if (server == null) {
+            update(onStatus, "端口 $port 起连续 $PORT_PROBE_COUNT 个都被占用，无法监听")
+            return
+        }
         this.server = server
         isListening = true
         update(onStatus, "正在监听端口 ${server.localPort}，等待发送端连入…")
@@ -129,6 +137,11 @@ class CastReceiverEngine(
     private fun update(onStatus: (String) -> Unit, message: String) {
         status = message
         onStatus(message)
+    }
+
+    private companion object {
+        /** 默认端口被占时，向后连续尝试的端口数。 */
+        const val PORT_PROBE_COUNT = 5
     }
 
     suspend fun stop() {

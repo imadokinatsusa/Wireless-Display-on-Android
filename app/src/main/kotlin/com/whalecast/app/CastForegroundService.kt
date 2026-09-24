@@ -8,6 +8,7 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
+import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 
@@ -25,25 +26,33 @@ class CastForegroundService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        ensureChannel()
-        val notification = NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("WhaleCast 正在投屏")
-            .setContentText("屏幕内容正在发送给接收端")
-            .setSmallIcon(android.R.drawable.ic_menu_share)
-            .setOngoing(true)
-            .setPriority(NotificationCompat.PRIORITY_LOW)
-            .build()
+        return try {
+            ensureChannel()
+            val notification = NotificationCompat.Builder(this, CHANNEL_ID)
+                .setContentTitle("WhaleCast 正在投屏")
+                .setContentText("屏幕内容正在发送给接收端")
+                .setSmallIcon(android.R.drawable.ic_menu_share)
+                .setOngoing(true)
+                .setPriority(NotificationCompat.PRIORITY_LOW)
+                .build()
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(
-                NOTIFICATION_ID,
-                notification,
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION,
-            )
-        } else {
-            startForeground(NOTIFICATION_ID, notification)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                startForeground(
+                    NOTIFICATION_ID,
+                    notification,
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION,
+                )
+            } else {
+                startForeground(NOTIFICATION_ID, notification)
+            }
+            START_NOT_STICKY
+        } catch (error: Exception) {
+            // 例如系统限制后台启动前台服务、或授权状态不满足类型要求。
+            // 记下来即可，绝不能因为"保活失败"反过来把 App 炸掉。
+            Log.w(TAG, "前台服务启动失败：${error.message}", error)
+            stopSelf()
+            START_NOT_STICKY
         }
-        return START_NOT_STICKY
     }
 
     private fun ensureChannel() {
@@ -58,14 +67,18 @@ class CastForegroundService : Service() {
     }
 
     companion object {
+        private const val TAG = "CastForegroundService"
         private const val CHANNEL_ID = "whalecast-cast"
         private const val NOTIFICATION_ID = 0x5743
 
         fun start(context: Context) {
-            ContextCompat.startForegroundService(
-                context,
-                Intent(context, CastForegroundService::class.java),
-            )
+            // Android 12+ 对后台启动前台服务有限制：失败了也不能让调用方崩溃
+            runCatching {
+                ContextCompat.startForegroundService(
+                    context,
+                    Intent(context, CastForegroundService::class.java),
+                )
+            }
         }
 
         fun stop(context: Context) {
