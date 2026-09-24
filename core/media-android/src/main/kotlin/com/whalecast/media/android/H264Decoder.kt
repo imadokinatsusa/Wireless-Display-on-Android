@@ -24,6 +24,12 @@ class H264Decoder(private val surface: Surface) {
     var droppedInputs: Long = 0L
         private set
 
+    /** 起播前丢弃的非关键帧数（可用来判断关键帧是否来得太慢）。 */
+    var skippedUntilKeyframe: Long = 0L
+        private set
+
+    private var sawKeyframe: Boolean = false
+
     val isConfigured: Boolean get() = codec != null
 
     fun configure(config: VideoConfig) {
@@ -43,9 +49,18 @@ class H264Decoder(private val surface: Surface) {
         Log.i(TAG, "解码器已配置：${config.width}x${config.height}")
     }
 
-    /** 喂一帧编码数据。返回 false 表示这一帧没进去（解码器忙或未配置）。 */
+    /** 喂一帧编码数据。返回 false 表示这一帧没进去（解码器忙、未配置，或还在等关键帧）。 */
     fun decode(frame: EncodedFrame): Boolean {
         val codec = this.codec ?: return false
+
+        // 成熟方案（scrcpy 等）都这么做：拿到关键帧之前，非关键帧喂进解码器只会报错或花屏。
+        if (!sawKeyframe) {
+            if (!frame.isKeyframe) {
+                skippedUntilKeyframe += 1
+                return false
+            }
+            sawKeyframe = true
+        }
         val index = try {
             codec.dequeueInputBuffer(INPUT_TIMEOUT_US)
         } catch (error: IllegalStateException) {

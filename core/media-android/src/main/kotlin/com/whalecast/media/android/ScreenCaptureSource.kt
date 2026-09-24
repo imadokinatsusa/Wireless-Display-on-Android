@@ -107,6 +107,17 @@ class ScreenCaptureSource(
             setInteger(MediaFormat.KEY_BIT_RATE, bitRate)
             setInteger(MediaFormat.KEY_FRAME_RATE, frameRate)
             setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, keyframeIntervalSeconds)
+            // 参考 scrcpy 与官方 MediaProjection 示例：让编码器在每个关键帧前自带 SPS/PPS。
+            // 这样接收端能从任意关键帧起播，不再依赖"配置包必须最先抵达"的时序假设。
+            runCatching { setInteger(MediaFormat.KEY_PREPEND_HEADER_TO_SYNC_FRAMES, 1) }
+            // baseline profile：无 B 帧、解码延迟更低、兼容性更好。
+            // 个别编码器不支持显式设置，失败就沿用设备默认。
+            runCatching {
+                setInteger(
+                    MediaFormat.KEY_PROFILE,
+                    MediaCodecInfo.CodecProfileLevel.AVCProfileBaseline,
+                )
+            }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 runCatching {
                     setInteger(
