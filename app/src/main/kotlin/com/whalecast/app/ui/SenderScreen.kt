@@ -182,7 +182,8 @@ fun SenderScreen(onBack: () -> Unit) {
                         Text("正在投屏", fontWeight = FontWeight.Bold)
                         Text(status, style = MaterialTheme.typography.bodyMedium)
                         Text(
-                            "发出帧 ${stats.framesSent}｜已发 ${stats.bytesSent / 1024} KB｜${spec.label}",
+                            "发出帧 ${stats.framesSent}｜已发 ${stats.bytesSent / 1024} KB｜${spec.label}" +
+                                "｜前台服务 ${if (CastForegroundService.isInForeground) "已就绪" else "未就绪"}",
                             style = MaterialTheme.typography.bodySmall,
                         )
                         Button(
