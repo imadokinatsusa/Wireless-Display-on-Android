@@ -37,13 +37,17 @@ import com.whalecast.app.CastForegroundService
 import com.whalecast.app.CastSenderEngine
 import com.whalecast.discovery.BeaconScanner
 import com.whalecast.discovery.ConnectCode
+import com.whalecast.discovery.DiscoveredDevice
 import com.whalecast.session.StatsSnapshot
 import com.whalecast.transport.DEFAULT_CAST_PORT
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 /**
- * 发送端界面：填接收端地址 → 授权屏幕录制 → 开始投屏。
+ * 发送端：**进来就自动扫描**，把发现的接收端直接列出来，点一下就投屏。
+ *
+ * 搜不到时才退回"输入连接码"，而且不再需要用户填 IP、端口、采集参数 ——
+ * 那些都由 [CaptureSpec] 与默认端口决定。
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -51,76 +55,84 @@ fun SenderScreen(onBack: () -> Unit) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
-    var codeInput by remember { mutableStateOf("") }
-    var scanner by remember { mutableStateOf<BeaconScanner?>(null) }
-    var host by remember { mutableStateOf("") }
-    var portText by remember { mutableStateOf(DEFAULT_CAST_PORT.toString()) }
-    var status by remember { mutableStateOf("填写接收端显示的 IP 与端口，然后点「开始投屏」。") }
+    var devices by remember { mutableStateOf<Map<String, DiscoveredDevice>>(emptyMap()) }
+    var status by remember { mutableStateOf("正在搜索同一 Wi-Fi 下的接收端…") }
     var running by remember { mutableStateOf(false) }
     var engine by remember { mutableStateOf<CastSenderEngine?>(null) }
     var stats by remember { mutableStateOf(StatsSnapshot()) }
+    var manualCode by remember { mutableStateOf("") }
+    var pendingHost by remember { mutableStateOf<String?>(null) }
 
     val spec = remember { CaptureSpec.from(context.resources.displayMetrics) }
+    val scanner = remember { BeaconScanner(scope) }
 
-    val projectionLauncher = rememberLauncherForActivityResult(
+    LaunchedEffect(Unit) {
+        scanner.start()
+        scanner.devices.collect { map ->
+            devices = map
+            if (!running) {
+                status = if (map.isEmpty()) {
+                    "正在搜索同一 Wi-Fi 下的接收端…"
+                } else {
+                    "发现 ${map.size} 台，点一下就开始投屏"
+                }
+            }
+        }
+    }
+
+    DisposableEffect(Unit) {
+        onDispose { scanner.stop() }
+    }
+
+    val launcher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartActivityForResult(),
     ) { result ->
         val data = result.data
-        if (result.resultCode == Activity.RESULT_OK && data != null) {
-            val manager = context.getSystemService(MediaProjectionManager::class.java)
-            if (manager == null) {
-                status = "系统没有提供投屏服务，无法继续"
+        val host = pendingHost
+        if (result.resultCode != Activity.RESULT_OK || data == null) {
+            status = "已取消屏幕录制授权"
+            pendingHost = null
+            return@rememberLauncherForActivityResult
+        }
+        if (host.isNullOrBlank()) {
+            status = "没有目标设备"
+            return@rememberLauncherForActivityResult
+        }
+        val manager = context.getSystemService(MediaProjectionManager::class.java)
+        if (manager == null) {
+            status = "系统没有提供投屏服务"
+            return@rememberLauncherForActivityResult
+        }
+        val projection = runCatching { manager.getMediaProjection(result.resultCode, data) }
+            .getOrElse { error ->
+                status = "获取投屏授权失败：${error.message ?: error::class.java.simpleName}"
                 return@rememberLauncherForActivityResult
             }
-            // 先拿到 MediaProjection（系统要求此刻已获得用户授权），再启动前台服务
-            val projection = runCatching { manager.getMediaProjection(result.resultCode, data) }
-                .getOrElse { error ->
-                    status = "获取投屏授权失败：${error.message ?: error::class.java.simpleName}"
-                    return@rememberLauncherForActivityResult
-                }
-            // Android 14+：必须在 createVirtualDisplay 之前跑起 mediaProjection 前台服务
-            CastForegroundService.start(context)
-            val port = portText.toIntOrNull() ?: DEFAULT_CAST_PORT
-            val newEngine = CastSenderEngine(scope, projection, spec)
-            engine = newEngine
-            running = true
-            scope.launch {
-                // 整段都包住：搜索接收端、启动采集，任何一环失败都只提示，不让 App 崩
-                val targetHost = runCatching {
-                    if (codeInput.isNotBlank() && host.isBlank()) {
-                        status = "正在按连接码 ${ConnectCode.pretty(codeInput)} 搜索接收端…"
-                        val found = scanner?.resolve(codeInput)
-                        if (found == null) {
-                            status = "没找到这台接收端：确认两台设备在同一 Wi-Fi，或改用手动 IP。"
-                            running = false
-                            engine = null
-                            CastForegroundService.stop(context)
-                            return@launch
-                        }
-                        status = "已找到 ${found.beacon.deviceName}（${found.endpoint}），正在连接…"
-                        found.host
-                    } else {
-                        host.trim()
-                    }
-                }.getOrElse { error ->
-                    status = "搜索接收端失败：${error.message ?: error::class.java.simpleName}"
-                    running = false
-                    engine = null
-                    CastForegroundService.stop(context)
-                    return@launch
-                }
-                runCatching {
-                    newEngine.start(targetHost, port) { status = it }
-                }.onFailure { error ->
-                    status = "启动失败：${error.message ?: error::class.java.simpleName}"
+        // Android 14+：必须在建虚拟屏之前跑起 mediaProjection 类型的前台服务
+        CastForegroundService.start(context)
+        val newEngine = CastSenderEngine(scope, projection, spec)
+        engine = newEngine
+        running = true
+        scope.launch {
+            runCatching { newEngine.start(host, DEFAULT_CAST_PORT) { status = it } }
+                .onFailure { error ->
+                    status = "投屏失败：${error.message ?: error::class.java.simpleName}"
                     running = false
                     engine = null
                     CastForegroundService.stop(context)
                 }
-            }
-        } else {
-            status = "已取消屏幕录制授权，无法投屏。"
         }
+    }
+
+    fun castTo(host: String) {
+        pendingHost = host
+        val manager = context.getSystemService(MediaProjectionManager::class.java)
+        if (manager == null) {
+            status = "系统没有提供投屏服务"
+            return
+        }
+        runCatching { launcher.launch(manager.createScreenCaptureIntent()) }
+            .onFailure { status = "无法打开授权界面：${it.message ?: it::class.java.simpleName}" }
     }
 
     LaunchedEffect(running) {
@@ -128,11 +140,6 @@ fun SenderScreen(onBack: () -> Unit) {
             engine?.let { stats = it.sessionStats.snapshot.value }
             delay(500)
         }
-    }
-
-    // 离开界面停掉扫描，避免后台一直占着 UDP 端口
-    DisposableEffect(Unit) {
-        onDispose { scanner?.stop() }
     }
 
     Scaffold(
@@ -151,99 +158,92 @@ fun SenderScreen(onBack: () -> Unit) {
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            Card {
-                Column(
-                    modifier = Modifier.padding(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    Text("连接码（接收端屏幕上的 6 位码）", fontWeight = FontWeight.Bold)
-                    OutlinedTextField(
-                        value = codeInput,
-                        onValueChange = { codeInput = ConnectCode.normalize(it) },
-                        label = { Text("例如 ABC-234") },
-                        singleLine = true,
-                        enabled = !running,
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                    Text("自动发现不可用时，可在下面手动填 IP", style = MaterialTheme.typography.bodySmall)
-                    OutlinedTextField(
-                        value = host,
-                        onValueChange = { host = it },
-                        label = { Text("IP，例如 192.168.1.23") },
-                        singleLine = true,
-                        enabled = !running,
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                    OutlinedTextField(
-                        value = portText,
-                        onValueChange = { value -> portText = value.filter { it.isDigit() } },
-                        label = { Text("端口") },
-                        singleLine = true,
-                        enabled = !running,
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                    Text(
-                        "采集规格：${spec.label}",
-                        style = MaterialTheme.typography.bodySmall,
-                    )
-                }
-            }
-
-            Button(
-                onClick = {
-                    if (running) {
-                        scope.launch {
-                            engine?.stop()
-                            engine = null
-                            running = false
-                            CastForegroundService.stop(context)
-                            status = "已停止投屏。"
-                        }
-                    } else if (codeInput.isBlank() && host.isBlank()) {
-                        status = "请输入接收端屏幕上的连接码（或手动填 IP）。"
-                    } else {
-                        // 扫描器常驻：连接码每秒都在广播，需要时直接 resolve
-                        if (scanner == null) {
-                            scanner = BeaconScanner(scope).also { it.start() }
-                        }
-                        val manager = context.getSystemService(MediaProjectionManager::class.java)
-                        if (manager == null) {
-                            status = "系统没有提供投屏服务（MediaProjectionManager 为空）"
-                        } else {
-                            projectionLauncher.launch(manager.createScreenCaptureIntent())
+            if (running) {
+                Card {
+                    Column(
+                        modifier = Modifier.padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Text("正在投屏", fontWeight = FontWeight.Bold)
+                        Text(status, style = MaterialTheme.typography.bodyMedium)
+                        Text(
+                            "发出帧 ${stats.framesSent}｜已发 ${stats.bytesSent / 1024} KB｜${spec.label}",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                        Button(
+                            onClick = {
+                                scope.launch {
+                                    engine?.stop()
+                                    engine = null
+                                    running = false
+                                    CastForegroundService.stop(context)
+                                    status = "已停止"
+                                }
+                            },
+                        ) {
+                            Text("停止投屏")
                         }
                     }
-                },
-                modifier = Modifier.fillMaxWidth(),
-            ) {
-                Text(if (running) "停止投屏" else "开始投屏")
-            }
-
-            Card {
-                Column(
-                    modifier = Modifier.padding(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp),
-                ) {
-                    Text("状态", fontWeight = FontWeight.Bold)
-                    Text(status, style = MaterialTheme.typography.bodyMedium)
-                    val capture = engine?.captureStats()
-                    Text(
-                        "发出帧 ${stats.framesSent}｜包 ${stats.packetsSent}｜已发 ${stats.bytesSent / 1024} KB" +
-                            "｜编码丢帧 ${capture?.second ?: 0}｜目标码率 ${(capture?.third ?: 0) / 1000} kbps",
-                        style = MaterialTheme.typography.bodySmall,
-                    )
-                    if (stats.sendFailures > 0) {
-                        Text("发送失败 ${stats.sendFailures} 次", style = MaterialTheme.typography.bodySmall)
+                }
+            } else {
+                devices.values.forEach { device ->
+                    Card {
+                        Column(
+                            modifier = Modifier.padding(16.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
+                            Text(device.beacon.deviceName, fontWeight = FontWeight.Bold)
+                            Text(device.endpoint, style = MaterialTheme.typography.bodySmall)
+                            Button(onClick = { castTo(device.host) }) { Text("投到这台上") }
+                        }
                     }
                 }
-            }
 
-            Text(
-                "提示：接收端会显示 6 位连接码并广播到局域网；两台设备必须在同一 Wi-Fi 下" +
-                    "（若路由器开了 AP 隔离，请改用手动 IP）。",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+                if (devices.isEmpty()) {
+                    Card {
+                        Column(
+                            modifier = Modifier.padding(16.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            Text("没搜到接收端？", fontWeight = FontWeight.Bold)
+                            Text(
+                                "确认两台设备连的是同一个 Wi-Fi。也可以直接输入接收端屏幕上的连接码：",
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                            OutlinedTextField(
+                                value = manualCode,
+                                onValueChange = { manualCode = ConnectCode.normalize(it) },
+                                label = { Text("例如 ABC-234") },
+                                singleLine = true,
+                                modifier = Modifier.fillMaxWidth(),
+                            )
+                            Button(
+                                enabled = ConnectCode.isValid(manualCode),
+                                onClick = {
+                                    scope.launch {
+                                        status = "正在按连接码搜索…"
+                                        val found = runCatching { scanner.resolve(manualCode, 6_000) }
+                                            .getOrNull()
+                                        if (found == null) {
+                                            status = "没找到这个码对应的接收端"
+                                        } else {
+                                            castTo(found.host)
+                                        }
+                                    }
+                                },
+                            ) {
+                                Text("按码连接")
+                            }
+                        }
+                    }
+                }
+
+                Text(
+                    text = status,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
         }
     }
 }

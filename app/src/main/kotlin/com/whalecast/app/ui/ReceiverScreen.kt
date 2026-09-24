@@ -11,10 +11,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.Button
-import androidx.compose.material3.Card
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
@@ -29,23 +25,24 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.whalecast.app.CastReceiverEngine
-import com.whalecast.app.LocalAddress
 import com.whalecast.discovery.Beacon
 import com.whalecast.discovery.BeaconBroadcaster
 import com.whalecast.discovery.ConnectCode
 import com.whalecast.session.StatsSnapshot
 import com.whalecast.transport.DEFAULT_CAST_PORT
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
 
 /**
- * 接收端界面：显示自己的地址 → 开始监听 → 全屏显示投过来的画面。
+ * 接收端：**进来就自动待命**（开始监听 + 广播连接码），用户不需要点任何按钮。
+ *
+ * 界面上只留三样东西：连接码、状态、画面 —— 把内部实现（端口、广播、解码器）
+ * 全部收在下面，不打扰用户。
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -53,41 +50,49 @@ fun ReceiverScreen(onBack: () -> Unit) {
     val scope = rememberCoroutineScope()
 
     var engine by remember { mutableStateOf<CastReceiverEngine?>(null) }
-    var status by remember { mutableStateOf("点「开始监听」，把下面这个地址填到手机的发送端。") }
+    var broadcaster by remember { mutableStateOf<BeaconBroadcaster?>(null) }
+    var status by remember { mutableStateOf("正在准备接收…") }
     var stats by remember { mutableStateOf(StatsSnapshot()) }
     var surface by remember { mutableStateOf<Surface?>(null) }
-    var listening by remember { mutableStateOf(false) }
 
-    // 连接码 + 一次性令牌：发送端念码/输码即可连接，不必手敲 IP
     val sessionCode = remember { ConnectCode.random() }
     val token = remember { randomHexToken() }
-    var broadcaster by remember { mutableStateOf<BeaconBroadcaster?>(null) }
-
-    val localIp = remember { LocalAddress.ipv4() }
-    val port = remember { DEFAULT_CAST_PORT }
     val deviceName = remember { "${Build.MODEL} 的接收端" }
 
-    // Surface 与配置的到达顺序不确定，两者任一变化都重新尝试装配解码器
-    LaunchedEffect(engine, surface) {
-        engine?.attachSurface(surface)
+    // 一次装配：监听端口 + 把连接码广播出去，之后无需用户操心
+    LaunchedEffect(Unit) {
+        val newEngine = CastReceiverEngine(scope, DEFAULT_CAST_PORT)
+        engine = newEngine
+        newEngine.startListening { status = it }
+        val port = newEngine.listeningPort()
+        val newBroadcaster = BeaconBroadcaster(
+            scope = scope,
+            beaconProvider = { Beacon(sessionCode, port, deviceName, token) },
+        )
+        broadcaster = newBroadcaster
+        newBroadcaster.start()
     }
 
-    LaunchedEffect(listening) {
-        while (listening) {
+    LaunchedEffect(engine, surface) { engine?.attachSurface(surface) }
+
+    LaunchedEffect(Unit) {
+        while (true) {
             engine?.let { stats = it.sessionStats.snapshot.value }
             delay(500)
         }
     }
 
-    // 离开界面必须停掉广播，否则退回首页后还在持续发 UDP
     DisposableEffect(Unit) {
-        onDispose { broadcaster?.stop() }
+        onDispose {
+            broadcaster?.stop()
+            engine?.closeBlocking()
+        }
     }
 
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("接收端") },
+                title = { Text("接收端 · 等待投屏") },
                 navigationIcon = { TextButton(onClick = onBack) { Text("返回") } },
             )
         },
@@ -96,95 +101,42 @@ fun ReceiverScreen(onBack: () -> Unit) {
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
-                .verticalScroll(rememberScrollState())
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            Card {
-                Column(
-                    modifier = Modifier.padding(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp),
-                ) {
-                    Text("在发送端输入这个连接码", fontWeight = FontWeight.Bold)
-                    Text(
-                        text = ConnectCode.pretty(sessionCode),
-                        style = MaterialTheme.typography.displaySmall,
-                    )
-                    Text(
-                        text = "或手动填地址：${localIp ?: "未检测到局域网 IP（请先连 Wi-Fi）"}",
-                        style = MaterialTheme.typography.bodySmall,
-                    )
-                    Text("端口：$port", style = MaterialTheme.typography.bodyMedium)
-                }
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                Text(
+                    text = ConnectCode.pretty(sessionCode),
+                    style = MaterialTheme.typography.displayMedium,
+                )
+                Text(
+                    text = "在发送端点一下这台设备，或输入上面这个码",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
 
             SurfaceViewBox(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(260.dp)
+                    .height(280.dp)
                     .background(Color.Black),
                 onSurfaceChanged = { surface = it },
             )
 
-            Button(
-                onClick = {
-                    if (listening) {
-                        scope.launch {
-                            engine?.stop()
-                            engine = null
-                            broadcaster?.stop()
-                            broadcaster = null
-                            listening = false
-                            status = "已停止监听。"
-                        }
-                    } else {
-                        val newEngine = CastReceiverEngine(scope, port)
-                        engine = newEngine
-                        newEngine.startListening { status = it }
-                        listening = true
-                        // 广播里必须带"实际监听到的端口"：默认端口被占时会顺延
-                        val actualPort = newEngine.listeningPort()
-                        val newBroadcaster = BeaconBroadcaster(
-                            scope = scope,
-                            beaconProvider = {
-                                Beacon(
-                                    code = sessionCode,
-                                    tcpPort = actualPort,
-                                    deviceName = deviceName,
-                                    token = token,
-                                )
-                            },
-                        )
-                        broadcaster = newBroadcaster
-                        newBroadcaster.start()
-                    }
-                },
-                modifier = Modifier.fillMaxWidth(),
-            ) {
-                Text(if (listening) "停止监听" else "开始监听")
-            }
-
-            Card {
-                Column(
-                    modifier = Modifier.padding(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp),
-                ) {
-                    Text("状态", fontWeight = FontWeight.Bold)
-                    Text(status, style = MaterialTheme.typography.bodyMedium)
-                    Text(
-                        "收到帧 ${stats.framesReceived}｜丢帧 ${stats.framesDropped}" +
-                            "｜包 ${stats.packetsReceived}｜已收 ${stats.bytesReceived / 1024} KB",
-                        style = MaterialTheme.typography.bodySmall,
-                    )
-                }
-            }
+            Text(status, style = MaterialTheme.typography.bodyMedium)
+            Text(
+                text = "收到帧 ${stats.framesReceived}｜丢帧 ${stats.framesDropped}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
     }
 }
-
-/** 一次性令牌：既是连接凭证，也是后续加密握手的材料。 */
-private fun randomHexToken(bytes: Int = 8): String =
-    (1..bytes).joinToString("") { "%02x".format(kotlin.random.Random.nextInt(256)) }
 
 @Composable
 private fun SurfaceViewBox(modifier: Modifier, onSurfaceChanged: (Surface?) -> Unit) {
@@ -214,3 +166,7 @@ private fun SurfaceViewBox(modifier: Modifier, onSurfaceChanged: (Surface?) -> U
         },
     )
 }
+
+/** 一次性令牌：既是连接凭证，也是后续加密握手的材料。 */
+private fun randomHexToken(bytes: Int = 8): String =
+    (1..bytes).joinToString("") { "%02x".format(kotlin.random.Random.nextInt(256)) }

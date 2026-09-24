@@ -139,6 +139,14 @@ class CastReceiverEngine(
         onStatus(message)
     }
 
+    /**
+     * 供界面销毁时**同步**调用（DisposableEffect 里没有挂起上下文）。
+     * 只在必要时阻塞极短时间：关闭 socket 与解码器都是快操作。
+     */
+    fun closeBlocking() {
+        kotlinx.coroutines.runBlocking { runCatching { stop() } }
+    }
+
     private companion object {
         /** 默认端口被占时，向后连续尝试的端口数。 */
         const val PORT_PROBE_COUNT = 5
