@@ -119,8 +119,8 @@ class TcpTransportTest {
             val config = VideoConfig(
                 width = 1080,
                 height = 2400,
-                csd0 = byteArrayOf(0, 0, 0, 1, 0x67, 0x42, 0x00, 0x1E),
-                csd1 = byteArrayOf(0, 0, 0, 1, 0x68, 0xCE, 0x38, 0x80),
+                csd0 = byteArrayOf(0, 0, 0, 1, 0x67.toByte(), 0x42, 0x00, 0x1E),
+                csd1 = byteArrayOf(0, 0, 0, 1, 0x68.toByte(), 0xCE.toByte(), 0x38, 0x80.toByte()),
             )
             val received = CompletableDeferred<VideoConfig>()
             launch { serverSide.incoming.collect { if (!received.isCompleted) received.complete(ConfigPacketizer.parse(it)!!) } }

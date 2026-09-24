@@ -3,6 +3,7 @@ package com.whalecast.transport
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.TestScope
+import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runCurrent
@@ -14,7 +15,7 @@ import kotlin.test.assertTrue
 class LoopbackTransportTest {
 
     @Test
-    fun `两端可以互发消息`() = runTest {
+    fun `两端可以互发消息`() = runTest(UnconfinedTestDispatcher()) {
         val hub = LoopbackHub(backgroundScope)
         val (a, b) = hub.createPair()
         a.start()
@@ -37,7 +38,7 @@ class LoopbackTransportTest {
     }
 
     @Test
-    fun `未连接时发送返回失败而不是抛异常`() = runTest {
+    fun `未连接时发送返回失败而不是抛异常`() = runTest(UnconfinedTestDispatcher()) {
         val hub = LoopbackHub(backgroundScope)
         val (a, _) = hub.createPair()
         val result = a.send(byteArrayOf(1, 2, 3))
@@ -45,7 +46,7 @@ class LoopbackTransportTest {
     }
 
     @Test
-    fun `关闭后发送返回失败且状态为 Closed`() = runTest {
+    fun `关闭后发送返回失败且状态为 Closed`() = runTest(UnconfinedTestDispatcher()) {
         val hub = LoopbackHub(backgroundScope)
         val (a, b) = hub.createPair()
         a.start()
@@ -56,7 +57,7 @@ class LoopbackTransportTest {
     }
 
     @Test
-    fun `注入延迟后消息按虚拟时间到达`() = runTest {
+    fun `注入延迟后消息按虚拟时间到达`() = runTest(UnconfinedTestDispatcher()) {
         val hub = LoopbackHub(backgroundScope).apply { latencyMillis = 100 }
         val (a, b) = hub.createPair()
         a.start()
@@ -79,7 +80,7 @@ class LoopbackTransportTest {
     }
 
     @Test
-    fun `丢包率 100% 时消息全部丢弃`() = runTest {
+    fun `丢包率 100% 时消息全部丢弃`() = runTest(UnconfinedTestDispatcher()) {
         val hub = LoopbackHub(backgroundScope).apply { dropRate = 1.0 }
         val (a, b) = hub.createPair()
         a.start()
@@ -97,7 +98,7 @@ class LoopbackTransportTest {
     }
 
     @Test
-    fun `同一 seed 下丢包序列可复现`() = runTest {
+    fun `同一 seed 下丢包序列可复现`() = runTest(UnconfinedTestDispatcher()) {
         suspend fun TestScope.droppedAfterSends(seed: Long): Int {
             val hub = LoopbackHub(backgroundScope, seed = seed).apply { dropRate = 0.5 }
             val (a, b) = hub.createPair()

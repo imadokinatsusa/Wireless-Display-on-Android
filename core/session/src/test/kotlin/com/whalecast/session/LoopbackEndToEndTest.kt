@@ -6,6 +6,7 @@ import com.whalecast.media.RecordingVideoSink
 import com.whalecast.media.SyntheticFrameCodec
 import com.whalecast.media.SyntheticVideoSource
 import com.whalecast.transport.LoopbackHub
+import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runCurrent
@@ -23,7 +24,7 @@ import kotlin.test.assertTrue
 class LoopbackEndToEndTest {
 
     @Test
-    fun `合成画面经环回通道在接收端完整重组并渲染`() = runTest {
+    fun `合成画面经环回通道在接收端完整重组并渲染`() = runTest(UnconfinedTestDispatcher()) {
         val hub = LoopbackHub(backgroundScope)
         val (senderSide, receiverSide) = hub.createPair()
         senderSide.start()
@@ -70,7 +71,7 @@ class LoopbackEndToEndTest {
     }
 
     @Test
-    fun `注入丢包时接收帧数少于发送帧数且不产生脏帧`() = runTest {
+    fun `注入丢包时接收帧数少于发送帧数且不产生脏帧`() = runTest(UnconfinedTestDispatcher()) {
         val hub = LoopbackHub(backgroundScope, seed = 11L).apply { dropRate = 0.2 }
         val (senderSide, receiverSide) = hub.createPair()
         senderSide.start()
@@ -102,7 +103,7 @@ class LoopbackEndToEndTest {
     }
 
     @Test
-    fun `畸形包被拒绝并计数，会话不中断`() = runTest {
+    fun `畸形包被拒绝并计数，会话不中断`() = runTest(UnconfinedTestDispatcher()) {
         val hub = LoopbackHub(backgroundScope)
         val (senderSide, receiverSide) = hub.createPair()
         senderSide.start()
@@ -128,7 +129,7 @@ class LoopbackEndToEndTest {
     }
 
     @Test
-    fun `延迟注入不会导致丢帧只是延后到达`() = runTest {
+    fun `延迟注入不会导致丢帧只是延后到达`() = runTest(UnconfinedTestDispatcher()) {
         val hub = LoopbackHub(backgroundScope).apply { latencyMillis = 50 }
         val (senderSide, receiverSide) = hub.createPair()
         senderSide.start()
