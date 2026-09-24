@@ -53,6 +53,10 @@ class CastReceiverEngine(
     var status: String = "尚未开始"
         private set
 
+    /** 解码器初始化失败的原因，供 UI 提示。 */
+    var configureFailure: String? = null
+        private set
+
     val connectedPeer: String? get() = transport?.remoteAddress
 
     fun listeningPort(): Int = server?.localPort ?: port
@@ -111,7 +115,7 @@ class CastReceiverEngine(
                         when (event) {
                             is ReassemblyEvent.FrameComplete -> {
                                 stats.onFrameReceived(event.frame.size)
-                                decoder?.decode(event.frame)
+                                runCatching { decoder?.decode(event.frame) }
                             }
 
                             is ReassemblyEvent.FrameDropped -> stats.onFrameDropped()
@@ -131,7 +135,13 @@ class CastReceiverEngine(
         val config = pendingConfig ?: return
         val surface = surface ?: return
         if (decoder != null) return
-        decoder = H264Decoder(surface).also { it.configure(config) }
+        // 码流不被设备支持、参数非法等都会在这里抛异常。
+        // 必须就地收口：冒泡出去会变成协程异常，直接把 App 炸掉。
+        runCatching {
+            decoder = H264Decoder(surface).also { it.configure(config) }
+        }.onFailure { error ->
+            configureFailure = error.message ?: error::class.java.simpleName
+        }
     }
 
     private fun update(onStatus: (String) -> Unit, message: String) {

@@ -59,14 +59,17 @@ class CastSenderEngine(
         job = scope.launch {
             var configSent = false
             capture.encodedFrames.collect { frame ->
-                // 配置必须先于首个关键帧抵达接收端
-                if (!configSent) {
-                    capture.latestConfig?.let { config ->
-                        transport.send(ConfigPacketizer.packetize(config, SESSION_ID))
-                        configSent = true
+                // 单帧失败不该终止整条管线，更不该崩掉 App
+                runCatching {
+                    // 配置必须先于首个关键帧抵达接收端
+                    if (!configSent) {
+                        capture.latestConfig?.let { config ->
+                            transport.send(ConfigPacketizer.packetize(config, SESSION_ID))
+                            configSent = true
+                        }
                     }
+                    sendFrame(transport, frame)
                 }
-                sendFrame(transport, frame)
             }
         }
     }
