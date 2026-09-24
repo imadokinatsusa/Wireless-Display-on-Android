@@ -70,6 +70,9 @@ object Protocol {
 enum class MessageType(val code: Int) {
     VIDEO_FRAME(0x01),
     AUDIO_FRAME(0x02),
+
+    /** 解码器初始化信息（分辨率 + SPS/PPS），必须先于首个关键帧到达。 */
+    VIDEO_CONFIG(0x03),
     CONTROL(0x10),
     ;
 

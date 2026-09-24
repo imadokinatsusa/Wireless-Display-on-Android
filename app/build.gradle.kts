@@ -52,6 +52,7 @@ dependencies {
     implementation(project(":core:protocol"))
     implementation(project(":core:transport"))
     implementation(project(":core:media"))
+    implementation(project(":core:media-android"))
     implementation(project(":core:session"))
 
     implementation(libs.kotlinx.coroutines.core)

@@ -76,8 +76,30 @@ function fail(message) {
   process.exit(1);
 }
 
+const FETCH_TIMEOUT_MS = 30_000;
+const MAX_ATTEMPTS = 4;
+
+/**
+ * fetch + 超时 + 退避重试。
+ * 直连 GitHub API 在国内网络下会偶发连接超时，没有重试就会整批推送失败。
+ */
+async function fetchWithRetry(url, options = {}, label = "请求") {
+  let lastError;
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    try {
+      return await fetch(url, { ...options, signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
+    } catch (error) {
+      lastError = error;
+      const cause = error.cause?.code ?? error.message;
+      console.warn(`[push] ${label} 第 ${attempt}/${MAX_ATTEMPTS} 次失败（${cause}），稍后重试…`);
+      await new Promise((resolve) => setTimeout(resolve, 1_000 * attempt));
+    }
+  }
+  throw lastError;
+}
+
 async function api(path, { method = "GET", body, token, raw = false } = {}) {
-  const res = await fetch(`${API}${path}`, {
+  const res = await fetchWithRetry(`${API}${path}`, {
     method,
     headers: {
       Authorization: `Bearer ${token}`,
@@ -123,13 +145,17 @@ async function collectFiles(dir, out = []) {
 }
 
 async function fetchJobLog(owner, name, token, jobId) {
-  const res = await fetch(`${API}/repos/${owner}/${name}/actions/jobs/${jobId}/logs`, {
-    headers: {
-      Authorization: `Bearer ${token}`,
-      "User-Agent": "whalecast-push",
+  const res = await fetchWithRetry(
+    `${API}/repos/${owner}/${name}/actions/jobs/${jobId}/logs`,
+    {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "User-Agent": "whalecast-push",
+      },
+      redirect: "follow",
     },
-    redirect: "follow",
-  });
+    "获取构建日志",
+  );
   if (!res.ok) return `（无法获取日志：HTTP ${res.status}）`;
   return await res.text();
 }
