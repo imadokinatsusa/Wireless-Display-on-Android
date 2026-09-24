@@ -71,10 +71,14 @@ object CaptureSpec {
     }
 
     fun from(metrics: DisplayMetrics, maxLongEdge: Int = MAX_LONG_EDGE): Spec {
-        val longEdge = maxOf(metrics.widthPixels, metrics.heightPixels)
-        val scale = minOf(1f, maxLongEdge.toFloat() / longEdge.toFloat())
-        val width = align((metrics.widthPixels * scale).toInt())
-        val height = align((metrics.heightPixels * scale).toInt())
+        // 用**屏幕真实尺寸**，只把奇数抹成偶数（编码器色度采样要求）。
+        //
+        // 为什么不缩放：Android 14 的投屏授权界面允许"只共享单个应用"，
+        // 那种模式下系统要求虚拟屏尺寸与屏幕一致；任何缩放或 16 对齐都会让
+        // createVirtualDisplay 抛异常 —— 这正是真机上"选窗口就闪退、选全屏不启动"的元凶。
+        // 顺带好处：画质不再被压到 720p。
+        val width = metrics.widthPixels and 1.inv()
+        val height = metrics.heightPixels and 1.inv()
         return Spec(
             width = width,
             height = height,

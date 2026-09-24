@@ -135,16 +135,25 @@ class ScreenCaptureSource(
 
         this.codec = codec
         this.inputSurface = surface
-        this.virtualDisplay = projection.createVirtualDisplay(
-            VIRTUAL_DISPLAY_NAME,
-            width,
-            height,
-            densityDpi,
-            DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-            surface,
-            null,
-            null,
-        )
+        this.virtualDisplay = try {
+            projection.createVirtualDisplay(
+                VIRTUAL_DISPLAY_NAME,
+                width,
+                height,
+                densityDpi,
+                DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
+                surface,
+                null,
+                null,
+            )
+        } catch (error: Exception) {
+            // 交给上层显示可读原因，而不是让异常在协程里炸掉 App
+            throw IllegalStateException(
+                "创建虚拟屏失败（${width}×${height}）：${error.message}。" +
+                    "如果授权界面里选的是「单个应用」，请改选「整个屏幕」再试。",
+                error,
+            )
+        }
         job = scope.launch(Dispatchers.Default) { drainEncoder(codec) }
     }
 
