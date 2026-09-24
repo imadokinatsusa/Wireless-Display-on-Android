@@ -2,6 +2,7 @@ package com.whalecast.protocol
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class ProtocolTest {
@@ -18,9 +19,10 @@ class ProtocolTest {
         val ticks = Protocol.ticksFromNanos(nanos)
         assertTrue(ticks > 0, "换算结果应为正数，实际 $ticks")
         val millisPart = nanos / 1_000_000L * 90L
-        assertTrue(ticks >= millisPart && ticks - millisPart < 90) {
-            "换算应等于毫秒部分加亚毫秒补充：ticks=$ticks millisPart=$millisPart"
-        }
+        assertTrue(
+            ticks >= millisPart && ticks - millisPart < 90,
+            "换算应等于毫秒部分加亚毫秒补充：ticks=$ticks millisPart=$millisPart",
+        )
     }
 
     @Test
@@ -36,7 +38,7 @@ class ProtocolTest {
         MessageType.entries.forEach { type ->
             assertEquals(type, MessageType.fromCode(type.code))
         }
-        assertEquals(null, MessageType.fromCode(0x7F))
+        assertNull(MessageType.fromCode(0x7F))
     }
 
     @Test
