@@ -118,20 +118,24 @@ fun SenderScreen(onBack: () -> Unit) {
                 status = "获取投屏授权失败：${error.message ?: error::class.java.simpleName}"
                 return@rememberLauncherForActivityResult
             }
-        // Android 14 要求：启动 mediaProjection 前台服务时，MediaProjection 必须已处于
-        // "活动会话"中 —— 而 registerCallback 正是会话开始的标志。
-        // 因此顺序必须是：注册回调 → 启动前台服务 → 等它真正就绪 → 创建虚拟屏。
+        // 顺序很讲究（Android 10+ 起 createVirtualDisplay 要求有 mediaProjection 类型前台服务）：
+        //   1) 先 registerCallback 建立 MediaProjection 活动会话（Android 14 类型校验会看它）
+        //   2) 等 Activity 从系统授权页真正恢复，再启动前台服务 ——
+        //      刚返回时应用可能仍被视为"后台"，startForegroundService 会被系统静默拒绝
+        //   3) 等服务真正进入前台，最后才创建虚拟屏
         runCatching {
             projection.registerCallback(
                 object : MediaProjection.Callback() {},
                 Handler(Looper.getMainLooper()),
             )
         }
-        CastForegroundService.start(context)
         val newEngine = CastSenderEngine(scope, projection, spec)
         engine = newEngine
         running = true
         scope.launch {
+            // 从系统授权页返回后，先等界面真正恢复，再启动前台服务
+            delay(600)
+            CastForegroundService.start(context)
             // 前台服务是异步启动的：必须等它真正进入前台，否则 createVirtualDisplay 会被系统拒绝
             if (!CastForegroundService.awaitForeground()) {
                 status = "前台服务未能进入前台，无法采集屏幕" +
