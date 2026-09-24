@@ -82,17 +82,19 @@ class FrameReassemblerTest {
     @Test
     fun `在途帧超出上限时淘汰最旧的一帧`() {
         val reassembler = FrameReassembler(maxPendingFrames = 2)
-        // 三个都是"只到第一个包"的残缺帧
-        listOf(1L, 2L, 3L).forEach { seq ->
-            reassembler.onPacket(packetsOf(size = 3_000, seq = seq).first())
+        // 注意：必须是**递减**序号（乱序/迟到帧）才会堆出多个在途帧 ——
+        // 递增序号时旧帧会立刻被判为 SUPERSEDED 移除，压根到不了容量上限。
+        val events = mutableListOf<ReassemblyEvent>()
+        listOf(5L, 4L, 3L).forEach { seq ->
+            events += reassembler.onPacket(packetsOf(size = 3_000, seq = seq).first())
         }
         assertEquals(2, reassembler.pendingFrameCount, "在途帧数应受上限约束")
 
-        val drops = mutableListOf<ReassemblyEvent.FrameDropped>()
-        reassembler.onPacket(packetsOf(size = 3_000, seq = 4).first())
-            .filterIsInstance<ReassemblyEvent.FrameDropped>()
-            .forEach { drops += it }
-        assertTrue(drops.any { it.reason == DropReason.TOO_MANY_PENDING }, "应有帧因内存守护被淘汰")
+        val drops = events.filterIsInstance<ReassemblyEvent.FrameDropped>()
+        assertTrue(
+            drops.any { it.reason == DropReason.TOO_MANY_PENDING },
+            "应有帧因内存守护被淘汰，实际事件：$events",
+        )
     }
 
     @Test
