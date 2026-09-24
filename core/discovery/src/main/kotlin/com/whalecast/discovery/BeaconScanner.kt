@@ -70,7 +70,7 @@ class BeaconScanner(
                 localSocket = DatagramSocket(null).apply {
                     reuseAddress = true
                     broadcast = true
-                    bind(InetSocketAddress(port))
+                    bind(InetSocketAddress(requestedPort))
                 }
                 socket = localSocket
                 localPort = localSocket.localPort
