@@ -1,0 +1,17 @@
+# 构建产物
+build/
+.gradle/
+*.apk
+*.aab
+local.properties
+
+# IDE
+.idea/
+*.iml
+.DS_Store
+
+# 本机工具链（由 node 下载的 JDK / Android SDK / Gradle，见 README）
+.toolchain/
+
+# 规划草稿的临时产物
+.scratch/**/*.tmp
