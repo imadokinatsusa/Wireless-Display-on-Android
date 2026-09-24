@@ -21,6 +21,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -33,6 +34,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.whalecast.app.CaptureSpec
 import com.whalecast.app.CastSenderEngine
+import com.whalecast.discovery.BeaconScanner
+import com.whalecast.discovery.ConnectCode
 import com.whalecast.session.StatsSnapshot
 import com.whalecast.transport.DEFAULT_CAST_PORT
 import kotlinx.coroutines.delay
@@ -47,6 +50,8 @@ fun SenderScreen(onBack: () -> Unit) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
+    var codeInput by remember { mutableStateOf("") }
+    var scanner by remember { mutableStateOf<BeaconScanner?>(null) }
     var host by remember { mutableStateOf("") }
     var portText by remember { mutableStateOf(DEFAULT_CAST_PORT.toString()) }
     var status by remember { mutableStateOf("填写接收端显示的 IP 与端口，然后点「开始投屏」。") }
@@ -68,8 +73,23 @@ fun SenderScreen(onBack: () -> Unit) {
             engine = newEngine
             running = true
             scope.launch {
+                // 优先用连接码在局域网里找接收端；找不到再退回手动 IP
+                val targetHost = if (codeInput.isNotBlank() && host.isBlank()) {
+                    status = "正在按连接码 ${ConnectCode.pretty(codeInput)} 搜索接收端…"
+                    val found = scanner?.resolve(codeInput)
+                    if (found == null) {
+                        status = "没找到这台接收端：确认两台设备在同一 Wi-Fi，或改用手动 IP。"
+                        running = false
+                        engine = null
+                        return@launch
+                    }
+                    status = "已找到 ${found.beacon.deviceName}（${found.endpoint}），正在连接…"
+                    found.host
+                } else {
+                    host.trim()
+                }
                 runCatching {
-                    newEngine.start(host.trim(), port) { status = it }
+                    newEngine.start(targetHost, port) { status = it }
                 }.onFailure { error ->
                     status = "启动失败：${error.message ?: error::class.java.simpleName}"
                     running = false
@@ -86,6 +106,11 @@ fun SenderScreen(onBack: () -> Unit) {
             engine?.let { stats = it.sessionStats.snapshot.value }
             delay(500)
         }
+    }
+
+    // 离开界面停掉扫描，避免后台一直占着 UDP 端口
+    DisposableEffect(Unit) {
+        onDispose { scanner?.stop() }
     }
 
     Scaffold(
@@ -109,7 +134,16 @@ fun SenderScreen(onBack: () -> Unit) {
                     modifier = Modifier.padding(16.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    Text("接收端地址", fontWeight = FontWeight.Bold)
+                    Text("连接码（接收端屏幕上的 6 位码）", fontWeight = FontWeight.Bold)
+                    OutlinedTextField(
+                        value = codeInput,
+                        onValueChange = { codeInput = ConnectCode.normalize(it) },
+                        label = { Text("例如 ABC-234") },
+                        singleLine = true,
+                        enabled = !running,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Text("自动发现不可用时，可在下面手动填 IP", style = MaterialTheme.typography.bodySmall)
                     OutlinedTextField(
                         value = host,
                         onValueChange = { host = it },
@@ -142,9 +176,13 @@ fun SenderScreen(onBack: () -> Unit) {
                             running = false
                             status = "已停止投屏。"
                         }
-                    } else if (host.isBlank()) {
-                        status = "请先填写接收端的 IP 地址。"
+                    } else if (codeInput.isBlank() && host.isBlank()) {
+                        status = "请输入接收端屏幕上的连接码（或手动填 IP）。"
                     } else {
+                        // 扫描器常驻：连接码每秒都在广播，需要时直接 resolve
+                        if (scanner == null) {
+                            scanner = BeaconScanner(scope).also { it.start() }
+                        }
                         val manager = context.getSystemService(MediaProjectionManager::class.java)
                         projectionLauncher.launch(manager.createScreenCaptureIntent())
                     }
@@ -174,7 +212,8 @@ fun SenderScreen(onBack: () -> Unit) {
             }
 
             Text(
-                "提示：接收端界面上会显示它自己的 IP 与端口；两台设备必须在同一 Wi-Fi 下。",
+                "提示：接收端会显示 6 位连接码并广播到局域网；两台设备必须在同一 Wi-Fi 下" +
+                    "（若路由器开了 AP 隔离，请改用手动 IP）。",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

@@ -54,6 +54,7 @@ dependencies {
     implementation(project(":core:media"))
     implementation(project(":core:media-android"))
     implementation(project(":core:session"))
+    implementation(project(":core:discovery"))
 
     implementation(libs.kotlinx.coroutines.core)
     implementation(libs.androidx.core.ktx)
