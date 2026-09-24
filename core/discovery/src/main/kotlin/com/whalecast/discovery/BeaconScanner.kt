@@ -32,9 +32,9 @@ data class DiscoveredDevice(
  */
 class BeaconScanner(
     private val scope: CoroutineScope,
-    requestedPort: Int = Beacon.UDP_PORT,
+    port: Int = Beacon.UDP_PORT,
 ) {
-    private val port: Int = requestedPort
+    private val requestedPort: Int = port
 
     /**
      * 实际绑定的端口。传 0 时由系统分配。
