@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -47,8 +48,29 @@ private enum class AppScreen { Home, Sender, Receiver, LoopbackDemo }
 @Composable
 fun WhaleCastApp() {
     var screen by remember { mutableStateOf(AppScreen.Home) }
+    val context = LocalContext.current
+    // 崩溃记录用弹窗展示：首页卡片太容易被忽略，而这是主人唯一能看到堆栈的途径
+    var lastCrash by remember { mutableStateOf(CrashReporter.read(context)) }
 
     MaterialTheme(colorScheme = darkColorScheme()) {
+        lastCrash?.let { crash ->
+            AlertDialog(
+                onDismissRequest = { },
+                title = { Text("上次运行崩溃了") },
+                text = {
+                    Text(
+                        text = crash.take(1800),
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                },
+                confirmButton = {
+                    TextButton(onClick = {
+                        CrashReporter.clear(context)
+                        lastCrash = null
+                    }) { Text("知道了") }
+                },
+            )
+        }
         when (screen) {
             AppScreen.Home -> HomeScreen(
                 onSender = { screen = AppScreen.Sender },

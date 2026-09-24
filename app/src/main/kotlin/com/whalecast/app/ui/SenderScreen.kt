@@ -68,6 +68,10 @@ fun SenderScreen(onBack: () -> Unit) {
         val data = result.data
         if (result.resultCode == Activity.RESULT_OK && data != null) {
             val manager = context.getSystemService(MediaProjectionManager::class.java)
+            if (manager == null) {
+                status = "系统没有提供投屏服务，无法继续"
+                return@rememberLauncherForActivityResult
+            }
             // 先拿到 MediaProjection（系统要求此刻已获得用户授权），再启动前台服务
             val projection = runCatching { manager.getMediaProjection(result.resultCode, data) }
                 .getOrElse { error ->
@@ -81,21 +85,29 @@ fun SenderScreen(onBack: () -> Unit) {
             engine = newEngine
             running = true
             scope.launch {
-                // 优先用连接码在局域网里找接收端；找不到再退回手动 IP
-                val targetHost = if (codeInput.isNotBlank() && host.isBlank()) {
-                    status = "正在按连接码 ${ConnectCode.pretty(codeInput)} 搜索接收端…"
-                    val found = scanner?.resolve(codeInput)
-                    if (found == null) {
-                        status = "没找到这台接收端：确认两台设备在同一 Wi-Fi，或改用手动 IP。"
-                        running = false
-                        engine = null
-                        CastForegroundService.stop(context)
-                        return@launch
+                // 整段都包住：搜索接收端、启动采集，任何一环失败都只提示，不让 App 崩
+                val targetHost = runCatching {
+                    if (codeInput.isNotBlank() && host.isBlank()) {
+                        status = "正在按连接码 ${ConnectCode.pretty(codeInput)} 搜索接收端…"
+                        val found = scanner?.resolve(codeInput)
+                        if (found == null) {
+                            status = "没找到这台接收端：确认两台设备在同一 Wi-Fi，或改用手动 IP。"
+                            running = false
+                            engine = null
+                            CastForegroundService.stop(context)
+                            return@launch
+                        }
+                        status = "已找到 ${found.beacon.deviceName}（${found.endpoint}），正在连接…"
+                        found.host
+                    } else {
+                        host.trim()
                     }
-                    status = "已找到 ${found.beacon.deviceName}（${found.endpoint}），正在连接…"
-                    found.host
-                } else {
-                    host.trim()
+                }.getOrElse { error ->
+                    status = "搜索接收端失败：${error.message ?: error::class.java.simpleName}"
+                    running = false
+                    engine = null
+                    CastForegroundService.stop(context)
+                    return@launch
                 }
                 runCatching {
                     newEngine.start(targetHost, port) { status = it }
@@ -195,7 +207,11 @@ fun SenderScreen(onBack: () -> Unit) {
                             scanner = BeaconScanner(scope).also { it.start() }
                         }
                         val manager = context.getSystemService(MediaProjectionManager::class.java)
-                        projectionLauncher.launch(manager.createScreenCaptureIntent())
+                        if (manager == null) {
+                            status = "系统没有提供投屏服务（MediaProjectionManager 为空）"
+                        } else {
+                            projectionLauncher.launch(manager.createScreenCaptureIntent())
+                        }
                     }
                 },
                 modifier = Modifier.fillMaxWidth(),
