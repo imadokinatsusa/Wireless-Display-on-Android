@@ -45,6 +45,7 @@ class CastForegroundService : Service() {
             } else {
                 startForeground(NOTIFICATION_ID, notification)
             }
+            isInForeground = true
             START_NOT_STICKY
         } catch (error: Exception) {
             // 例如系统限制后台启动前台服务、或授权状态不满足类型要求。
@@ -53,6 +54,11 @@ class CastForegroundService : Service() {
             stopSelf()
             START_NOT_STICKY
         }
+    }
+
+    override fun onDestroy() {
+        isInForeground = false
+        super.onDestroy()
     }
 
     private fun ensureChannel() {
@@ -71,6 +77,17 @@ class CastForegroundService : Service() {
         private const val CHANNEL_ID = "whalecast-cast"
         private const val NOTIFICATION_ID = 0x5743
 
+        /**
+         * 前台服务是否**真正**进入了前台。
+         *
+         * `startForegroundService()` 是异步的：调用完立刻 createVirtualDisplay 会撞上
+         * "Media projections require a foreground service of type ..."。
+         * 所以采集之前必须等这个标志翻成 true。
+         */
+        @Volatile
+        var isInForeground: Boolean = false
+            private set
+
         fun start(context: Context) {
             // Android 12+ 对后台启动前台服务有限制：失败了也不能让调用方崩溃
             runCatching {
@@ -83,6 +100,17 @@ class CastForegroundService : Service() {
 
         fun stop(context: Context) {
             runCatching { context.stopService(Intent(context, CastForegroundService::class.java)) }
+            isInForeground = false
+        }
+
+        /** 等待前台服务就绪；返回 false 表示没等到（调用方应放弃采集并给出提示）。 */
+        suspend fun awaitForeground(timeoutMillis: Long = 3_000): Boolean {
+            val deadline = System.currentTimeMillis() + timeoutMillis
+            while (System.currentTimeMillis() < deadline) {
+                if (isInForeground) return true
+                kotlinx.coroutines.delay(50)
+            }
+            return isInForeground
         }
     }
 }

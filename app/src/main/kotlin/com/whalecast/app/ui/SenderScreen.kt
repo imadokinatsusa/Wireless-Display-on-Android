@@ -121,6 +121,14 @@ fun SenderScreen(onBack: () -> Unit) {
         engine = newEngine
         running = true
         scope.launch {
+            // 前台服务是异步启动的：必须等它真正进入前台，否则 createVirtualDisplay 会被系统拒绝
+            if (!CastForegroundService.awaitForeground()) {
+                status = "前台服务未能进入前台，无法采集屏幕（可能是系统限制了后台启动）"
+                running = false
+                engine = null
+                CastForegroundService.stop(context)
+                return@launch
+            }
             runCatching { newEngine.start(host, DEFAULT_CAST_PORT) { status = it } }
                 .onFailure { error ->
                     status = "投屏失败：${error.message ?: error::class.java.simpleName}"
