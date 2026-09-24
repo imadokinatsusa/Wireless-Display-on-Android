@@ -33,12 +33,17 @@ class BeaconBroadcaster(
     var sentCount: Long = 0L
         private set
 
+    /** 广播失败的原因；广播失败不影响投屏本身，但要能上报给 UI。 */
+    var failureReason: String? = null
+        private set
+
     fun start() {
         if (job != null) return
         job = scope.launch(Dispatchers.IO) {
-            val localSocket = DatagramSocket().apply { broadcast = true }
-            socket = localSocket
+            var localSocket: DatagramSocket? = null
             try {
+                localSocket = DatagramSocket().apply { broadcast = true }
+                socket = localSocket
                 while (currentCoroutineContext().isActive) {
                     val payload = beaconProvider().encode()
                     targets.forEach { target ->
@@ -56,8 +61,10 @@ class BeaconBroadcaster(
                     }
                     delay(intervalMillis)
                 }
+            } catch (error: Exception) {
+                failureReason = error.message ?: error::class.java.simpleName
             } finally {
-                runCatching { localSocket.close() }
+                runCatching { localSocket?.close() }
                 socket = null
             }
         }

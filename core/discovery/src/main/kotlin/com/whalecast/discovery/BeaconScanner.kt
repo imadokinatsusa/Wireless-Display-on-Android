@@ -46,18 +46,23 @@ class BeaconScanner(
     var running: Boolean = false
         private set
 
+    /** 发现失败的原因（端口被占、网络不可用…）。发现是尽力而为，不能因此崩溃。 */
+    var failureReason: String? = null
+        private set
+
     fun start() {
         if (job != null) return
         running = true
         job = scope.launch(Dispatchers.IO) {
-            val localSocket = DatagramSocket(null).apply {
-                reuseAddress = true
-                broadcast = true
-                bind(InetSocketAddress(port))
-            }
-            socket = localSocket
-            val buffer = ByteArray(512)
+            var localSocket: DatagramSocket? = null
             try {
+                localSocket = DatagramSocket(null).apply {
+                    reuseAddress = true
+                    broadcast = true
+                    bind(InetSocketAddress(port))
+                }
+                socket = localSocket
+                val buffer = ByteArray(512)
                 while (isActive) {
                     val packet = DatagramPacket(buffer, buffer.size)
                     localSocket.receive(packet)
@@ -67,10 +72,12 @@ class BeaconScanner(
                         current + (beacon.code to DiscoveredDevice(beacon, host, System.currentTimeMillis()))
                     }
                 }
-            } catch (_: IOException) {
-                // socket 被 stop() 关闭，或网络不可用：静默结束，UI 会提示"没发现设备"
+            } catch (error: Exception) {
+                // 端口被占、网络不可用、socket 被 stop() 关闭……
+                // 发现是"尽力而为"的能力：任何失败都不该让 App 崩溃。
+                failureReason = error.message ?: error::class.java.simpleName
             } finally {
-                runCatching { localSocket.close() }
+                runCatching { localSocket?.close() }
             }
         }
     }

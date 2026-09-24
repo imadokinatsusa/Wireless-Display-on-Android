@@ -7,6 +7,8 @@ import android.media.MediaCodecInfo
 import android.media.MediaFormat
 import android.media.projection.MediaProjection
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import android.view.Surface
 import com.whalecast.protocol.EncodedFrame
@@ -76,8 +78,26 @@ class ScreenCaptureSource(
 
     val configuredBitRate: Int get() = bitRate
 
+    /**
+     * 投影被外部停止（用户在通知栏点"停止投屏"、系统回收投影）时置位。
+     * UI 可据此提示"需要重新授权"。
+     */
+    @Volatile
+    var stopped: Boolean = false
+        private set
+
+    private val projectionCallback = object : MediaProjection.Callback() {
+        override fun onStop() {
+            stopped = true
+        }
+    }
+
     fun start() {
         if (job != null) return
+
+        // Android 14+ 强制要求：不先注册回调就 createVirtualDisplay 会抛
+        // IllegalStateException("Must register a callback before starting capture")。
+        projection.registerCallback(projectionCallback, Handler(Looper.getMainLooper()))
 
         val format = MediaFormat.createVideoFormat(MIME_TYPE, width, height).apply {
             setInteger(
@@ -173,6 +193,7 @@ class ScreenCaptureSource(
     suspend fun stop() {
         job?.cancelAndJoin()
         job = null
+        runCatching { projection.unregisterCallback(projectionCallback) }
         virtualDisplay?.release()
         virtualDisplay = null
         runCatching { codec?.stop() }

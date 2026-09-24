@@ -161,7 +161,7 @@ fun SenderScreen(onBack: () -> Unit) {
                         modifier = Modifier.fillMaxWidth(),
                     )
                     Text(
-                        "采集规格：${spec.width}×${spec.height} @30fps（长边上限 1280，16 对齐）",
+                        "采集规格：${spec.label}",
                         style = MaterialTheme.typography.bodySmall,
                     )
                 }

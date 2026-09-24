@@ -51,6 +51,7 @@ class CastSenderEngine(
             width = spec.width,
             height = spec.height,
             densityDpi = spec.densityDpi,
+            bitRate = spec.bitRate,
         )
         this.capture = capture
         capture.start()
