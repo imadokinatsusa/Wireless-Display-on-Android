@@ -28,9 +28,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.whalecast.app.CastReceiverEngine
+import com.whalecast.app.acquireMulticastLock
 import com.whalecast.discovery.Beacon
 import com.whalecast.discovery.BeaconBroadcaster
 import com.whalecast.discovery.ConnectCode
@@ -48,6 +50,10 @@ import kotlinx.coroutines.delay
 @Composable
 fun ReceiverScreen(onBack: () -> Unit) {
     val scope = rememberCoroutineScope()
+    val context = LocalContext.current
+
+    // 不持这个锁，Wi-Fi 芯片会把广播包全部丢掉（真机上"发送端搜不到"的主因）
+    val multicastLock = remember { acquireMulticastLock(context) }
 
     var engine by remember { mutableStateOf<CastReceiverEngine?>(null) }
     var broadcaster by remember { mutableStateOf<BeaconBroadcaster?>(null) }
@@ -86,6 +92,7 @@ fun ReceiverScreen(onBack: () -> Unit) {
         onDispose {
             broadcaster?.stop()
             engine?.closeBlocking()
+            runCatching { multicastLock?.release() }
         }
     }
 
@@ -132,6 +139,13 @@ fun ReceiverScreen(onBack: () -> Unit) {
             Text(
                 text = "收到帧 ${stats.framesReceived}｜丢帧 ${stats.framesDropped}",
                 style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(
+                text = "诊断：监听 ${engine?.listeningPort() ?: "-"}" +
+                    "｜广播 ${broadcaster?.sentCount ?: 0} 次" +
+                    (broadcaster?.failureReason?.let { "｜广播异常：$it" } ?: ""),
+                style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }

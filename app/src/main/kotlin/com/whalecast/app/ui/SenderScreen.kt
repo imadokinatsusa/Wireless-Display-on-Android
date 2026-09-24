@@ -35,6 +35,7 @@ import androidx.compose.ui.unit.dp
 import com.whalecast.app.CaptureSpec
 import com.whalecast.app.CastForegroundService
 import com.whalecast.app.CastSenderEngine
+import com.whalecast.app.acquireMulticastLock
 import com.whalecast.discovery.BeaconScanner
 import com.whalecast.discovery.ConnectCode
 import com.whalecast.discovery.DiscoveredDevice
@@ -66,6 +67,9 @@ fun SenderScreen(onBack: () -> Unit) {
     val spec = remember { CaptureSpec.from(context.resources.displayMetrics) }
     val scanner = remember { BeaconScanner(scope) }
 
+    // 不持这个锁，Wi-Fi 芯片会把广播包全部丢掉（真机上"搜不到接收端"的主因）
+    val multicastLock = remember { acquireMulticastLock(context) }
+
     LaunchedEffect(Unit) {
         scanner.start()
         scanner.devices.collect { map ->
@@ -81,7 +85,10 @@ fun SenderScreen(onBack: () -> Unit) {
     }
 
     DisposableEffect(Unit) {
-        onDispose { scanner.stop() }
+        onDispose {
+            scanner.stop()
+            runCatching { multicastLock?.release() }
+        }
     }
 
     val launcher = rememberLauncherForActivityResult(
@@ -241,6 +248,12 @@ fun SenderScreen(onBack: () -> Unit) {
                 Text(
                     text = status,
                     style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Text(
+                    text = "诊断：扫描端口 ${scanner.localPort}｜发现 ${devices.size} 台" +
+                        (scanner.failureReason?.let { "｜扫描异常：$it" } ?: ""),
+                    style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
