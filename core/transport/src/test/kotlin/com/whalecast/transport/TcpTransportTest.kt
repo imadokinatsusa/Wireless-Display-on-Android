@@ -24,8 +24,11 @@ import kotlin.test.assertTrue
  */
 class TcpTransportTest {
 
+    /** 十六进制字面量不能隐式窄化成 Byte（`byteArrayOf(0x67)` 编译不过），统一走这里。 */
+    private fun bytes(vararg values: Int): ByteArray = ByteArray(values.size) { values[it].toByte() }
+
     @Test
-    fun `两端可以互发消息`() = runBlocking {
+    fun `两端可以互发协议包`() = runBlocking {
         val server = TcpTransports.listen(0, this)
         val clientTask = async { TcpTransports.connect("127.0.0.1", server.localPort, this@runBlocking) }
         val serverSide = server.awaitClient()
@@ -35,16 +38,28 @@ class TcpTransportTest {
             serverSide.start()
             clientSide.start()
 
-            val atServer = CompletableDeferred<String>()
-            val atClient = CompletableDeferred<String>()
-            launch { serverSide.incoming.collect { if (!atServer.isCompleted) atServer.complete(it.decodeToString()) } }
-            launch { clientSide.incoming.collect { if (!atClient.isCompleted) atClient.complete(it.decodeToString()) } }
+            // 通道按协议包头分帧，所以只能发完整协议包（裸字符串会让 reader 一直等包头）
+            val atServer = CompletableDeferred<VideoConfig>()
+            val atClient = CompletableDeferred<VideoConfig>()
+            launch {
+                serverSide.incoming.collect {
+                    if (!atServer.isCompleted) ConfigPacketizer.parse(it)?.let(atServer::complete)
+                }
+            }
+            launch {
+                clientSide.incoming.collect {
+                    if (!atClient.isCompleted) ConfigPacketizer.parse(it)?.let(atClient::complete)
+                }
+            }
 
-            clientSide.send("hello-server".encodeToByteArray()).getOrThrow()
-            serverSide.send("hello-client".encodeToByteArray()).getOrThrow()
+            val fromClient = VideoConfig(1280, 720, bytes(0, 0, 0, 1, 0x67), bytes(0, 0, 0, 1, 0x68))
+            val fromServer = VideoConfig(1920, 1080, bytes(0, 0, 0, 1, 0x67), bytes(0, 0, 0, 1, 0x68))
 
-            assertEquals("hello-server", withTimeout(5_000) { atServer.await() })
-            assertEquals("hello-client", withTimeout(5_000) { atClient.await() })
+            clientSide.send(ConfigPacketizer.packetize(fromClient, sessionId = 1)).getOrThrow()
+            serverSide.send(ConfigPacketizer.packetize(fromServer, sessionId = 2)).getOrThrow()
+
+            assertEquals(1280, withTimeout(5_000) { atServer.await() }.width)
+            assertEquals(1920, withTimeout(5_000) { atClient.await() }.width)
             assertEquals(TransportState.Connected, clientSide.state.value)
             assertTrue(clientSide.sentBytes > 0)
             assertTrue(serverSide.receivedPackets > 0)

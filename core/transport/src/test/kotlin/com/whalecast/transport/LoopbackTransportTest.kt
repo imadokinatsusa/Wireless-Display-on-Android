@@ -1,13 +1,16 @@
 package com.whalecast.transport
 
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.yield
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -57,26 +60,28 @@ class LoopbackTransportTest {
     }
 
     @Test
-    fun `注入延迟后消息按虚拟时间到达`() = runTest(UnconfinedTestDispatcher()) {
-        val hub = LoopbackHub(backgroundScope).apply { latencyMillis = 100 }
+    fun `注入延迟后消息会延后到达`() = runBlocking {
+        // 刻意用真实时间：虚拟时间与调度器的组合容易踩坑，
+        // 而"延迟注入是否生效"这件事用 150ms 的真实等待就能可靠断言。
+        val hub = LoopbackHub(this).apply { latencyMillis = 150 }
         val (a, b) = hub.createPair()
         a.start()
         b.start()
 
         val received = mutableListOf<ByteArray>()
-        backgroundScope.launch { b.incoming.collect { received += it } }
-        runCurrent()
+        val collector = launch { b.incoming.collect { received += it } }
+        yield()
 
         a.send("delayed".encodeToByteArray()).getOrThrow()
-        runCurrent()
-        assertEquals(0, received.size, "延迟未到时不应送达")
+        delay(50)
+        assertEquals(0, received.size, "150ms 延迟下 50ms 时不应送达")
 
-        advanceTimeBy(50)
-        runCurrent()
-        assertEquals(0, received.size, "50ms 时仍不应送达")
+        delay(400)
+        assertEquals(1, received.size, "延迟过后应送达")
 
-        advanceUntilIdle()
-        assertEquals(1, received.size, "虚拟时间推进后应送达")
+        collector.cancel()
+        a.close()
+        b.close()
     }
 
     @Test

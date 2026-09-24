@@ -47,6 +47,15 @@ class FrameReassembler(private val maxPendingFrames: Int = 4) {
 
     private val pending = LinkedHashMap<Long, PendingFrame>()
 
+    /**
+     * 已交付的最大帧序号，用来发现"整帧丢光"的情况。
+     *
+     * 为什么需要它：单包帧一旦丢包，它**一个包都不会到达**，因此永远不会出现在
+     * [pending] 里，只靠在途帧根本报不出丢帧。序号空洞才是唯一线索。
+     * TCP 通道无乱序，这个判断是精确的（UDP 场景见 [noteCompletion] 的说明）。
+     */
+    private var highestCompletedSeq: Long? = null
+
     val pendingFrameCount: Int get() = pending.size
 
     fun onPacket(packet: VideoPacket): List<ReassemblyEvent> {
@@ -93,6 +102,7 @@ class FrameReassembler(private val maxPendingFrames: Int = 4) {
         if (frame.isComplete) {
             pending.remove(packet.frameSeq)
             events += ReassemblyEvent.FrameComplete(frame.build(packet.frameSeq))
+            noteCompletion(packet.sessionId, packet.frameSeq, events)
         }
 
         // 内存守护：在途帧过多时淘汰最旧的。
@@ -109,9 +119,34 @@ class FrameReassembler(private val maxPendingFrames: Int = 4) {
         return events.ifEmpty { listOf(ReassemblyEvent.Ignored) }
     }
 
+    /**
+     * 检测帧序号空洞：上一个完成帧与当前完成帧之间缺失的序号，就是彻底丢失的帧。
+     *
+     * 局限：UDP 场景（切片 07）会有乱序，迟到的帧会被这里误报为丢失；
+     * 届时需要改成基于超时窗口的判定。当前 TCP 通道无乱序，判定是精确的。
+     */
+    private fun noteCompletion(
+        sessionId: Int,
+        frameSeq: Long,
+        events: MutableList<ReassemblyEvent>,
+    ) {
+        val previous = highestCompletedSeq
+        if (previous != null && frameSeq > previous + 1) {
+            for (missing in (previous + 1) until frameSeq) {
+                events += ReassemblyEvent.FrameDropped(
+                    sessionId = sessionId,
+                    frameSeq = missing,
+                    reason = DropReason.MISSING_PACKETS,
+                )
+            }
+        }
+        highestCompletedSeq = if (previous == null) frameSeq else maxOf(previous, frameSeq)
+    }
+
     /** 会话结束或重连时清空在途状态。 */
     fun reset() {
         pending.clear()
+        highestCompletedSeq = null
     }
 
     private class PendingFrame(
