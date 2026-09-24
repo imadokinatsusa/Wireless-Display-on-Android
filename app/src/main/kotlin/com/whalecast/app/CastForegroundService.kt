@@ -49,7 +49,8 @@ class CastForegroundService : Service() {
             START_NOT_STICKY
         } catch (error: Exception) {
             // 例如系统限制后台启动前台服务、或授权状态不满足类型要求。
-            // 记下来即可，绝不能因为"保活失败"反过来把 App 炸掉。
+            // 关键是把原因**暴露给界面**（主人的真机上看不到 Logcat）。
+            foregroundError = "${error::class.java.simpleName}: ${error.message}"
             Log.w(TAG, "前台服务启动失败：${error.message}", error)
             stopSelf()
             START_NOT_STICKY
@@ -88,7 +89,14 @@ class CastForegroundService : Service() {
         var isInForeground: Boolean = false
             private set
 
+        /** 前台服务启动失败的原因。真机上看不到 Logcat，只能靠这行字定位。 */
+        @Volatile
+        var foregroundError: String? = null
+            private set
+
         fun start(context: Context) {
+            foregroundError = null
+            isInForeground = false
             // Android 12+ 对后台启动前台服务有限制：失败了也不能让调用方崩溃
             runCatching {
                 ContextCompat.startForegroundService(
