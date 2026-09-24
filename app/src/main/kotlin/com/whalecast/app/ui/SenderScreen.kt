@@ -33,6 +33,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.whalecast.app.CaptureSpec
+import com.whalecast.app.CastForegroundService
 import com.whalecast.app.CastSenderEngine
 import com.whalecast.discovery.BeaconScanner
 import com.whalecast.discovery.ConnectCode
@@ -66,6 +67,8 @@ fun SenderScreen(onBack: () -> Unit) {
     ) { result ->
         val data = result.data
         if (result.resultCode == Activity.RESULT_OK && data != null) {
+            // Android 14+：必须在 createVirtualDisplay 之前跑起 mediaProjection 前台服务
+            CastForegroundService.start(context)
             val manager = context.getSystemService(MediaProjectionManager::class.java)
             val projection = manager.getMediaProjection(result.resultCode, data)
             val port = portText.toIntOrNull() ?: DEFAULT_CAST_PORT
@@ -81,6 +84,7 @@ fun SenderScreen(onBack: () -> Unit) {
                         status = "没找到这台接收端：确认两台设备在同一 Wi-Fi，或改用手动 IP。"
                         running = false
                         engine = null
+                        CastForegroundService.stop(context)
                         return@launch
                     }
                     status = "已找到 ${found.beacon.deviceName}（${found.endpoint}），正在连接…"
@@ -94,6 +98,7 @@ fun SenderScreen(onBack: () -> Unit) {
                     status = "启动失败：${error.message ?: error::class.java.simpleName}"
                     running = false
                     engine = null
+                    CastForegroundService.stop(context)
                 }
             }
         } else {
@@ -174,6 +179,7 @@ fun SenderScreen(onBack: () -> Unit) {
                             engine?.stop()
                             engine = null
                             running = false
+                            CastForegroundService.stop(context)
                             status = "已停止投屏。"
                         }
                     } else if (codeInput.isBlank() && host.isBlank()) {
