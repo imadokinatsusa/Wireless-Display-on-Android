@@ -37,7 +37,7 @@ class Beacon(
         }
 
         return ByteBuffer
-            .allocate(HEADER_BYTES + codeBytes.size + tokenBytes.size + nameBytes.size)
+            .allocate(FIXED_BYTES + codeBytes.size + tokenBytes.size + nameBytes.size)
             .order(ByteOrder.BIG_ENDIAN)
             .apply {
                 putShort(MAGIC.toShort())
@@ -64,11 +64,18 @@ class Beacon(
         /** 广播与监听使用的 UDP 端口。 */
         const val UDP_PORT: Int = 47_922
 
-        private const val HEADER_BYTES: Int = 3
+        /**
+         * 固定字段总字节数：magic(2) + version(1) + codeLen(1) + tcpPort(2)
+         * + tokenLen(1) + nameLen(1) = 8。
+         *
+         * 早先这里写成 3（只算了 magic+version），导致 allocate 少 5 字节、
+         * encode 直接 BufferOverflow —— 广播根本发不出去。
+         */
+        private const val FIXED_BYTES: Int = 8
 
         /** 解析失败返回 null —— 局域网上什么垃圾都可能飘过来。 */
         fun decode(bytes: ByteArray): Beacon? {
-            if (bytes.size < HEADER_BYTES + ConnectCode.LENGTH + 2 + 1 + 1) return null
+            if (bytes.size < FIXED_BYTES + ConnectCode.LENGTH) return null
             val buffer = ByteBuffer.wrap(bytes).order(ByteOrder.BIG_ENDIAN)
 
             val magic = buffer.short.toInt() and 0xFFFF
