@@ -241,7 +241,6 @@ class ReceiverSession(
             },
             onFailed = { reason -> fail("$reason（本机 ${LocalAddress.summary()}）") },
             onRemoteVideo = { track -> bindRemoteVideo(track) },
-            onIceState = { ice -> _diagnostics.update { it.copy(ice = ice) } },
         )
 
         accepted.incoming.collect { message ->

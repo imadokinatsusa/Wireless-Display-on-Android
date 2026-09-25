@@ -23,14 +23,6 @@ internal class SessionObserver(
     private val onConnected: () -> Unit,
     private val onFailed: (String) -> Unit,
     private val onRemoteVideo: (VideoTrack) -> Unit,
-    /**
-     * ICE 状态的每一步都上报。
-     *
-     * 卡在"连接中"的时候，这是**唯一**能说明卡在哪儿的信号：
-     * `CHECKING` = 还在互相试探（多半是候选地址对不上）；
-     * `FAILED` = 彻底打不通；`CONNECTED` = 媒体通道成了。
-     */
-    private val onIceState: (String) -> Unit = {},
 ) : PeerConnection.Observer {
 
     // ── abstract 成员：这些必须实现，漏一个就编译不过 ──────────────────────────
@@ -56,7 +48,6 @@ internal class SessionObserver(
     }
 
     override fun onIceConnectionChange(newState: PeerConnection.IceConnectionState?) {
-        onIceState("ICE ${newState?.name ?: "未知"}")
         when (newState) {
             PeerConnection.IceConnectionState.CONNECTED,
             PeerConnection.IceConnectionState.COMPLETED,
@@ -66,17 +57,6 @@ internal class SessionObserver(
             PeerConnection.IceConnectionState.DISCONNECTED -> onFailed("连接已断开（ICE disconnected）")
             else -> Unit
         }
-    }
-
-    /** 候选收集失败（例如权限或网络限制）—— 这类原因平时完全看不见，必须报出来。 */
-    override fun onIceCandidateError(
-        address: String?,
-        port: Int,
-        url: String?,
-        errorCode: Int,
-        errorText: String?,
-    ) {
-        onIceState("候选失败 $errorCode $errorText")
     }
 
     // ── default 成员：挑有用的覆盖 ────────────────────────────────────────────
