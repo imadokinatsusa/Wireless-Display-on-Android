@@ -304,12 +304,34 @@ try {
   log("目标分支还是空的，将创建首次提交。");
 }
 
+// 组织 tree 条目：新增/更新 + **删除远端多余文件**。
+//
+// Git Data API 是"增量覆盖"语义：本地删掉的文件不会因为不提交就消失。
+// 不显式用 sha: null 删除，旧代码会一直留在远端参与编译 ——
+// 这正是"本地测试全绿、CI 却报一堆已删除文件的编译错误"的成因。
+const treeEntries = blobs.map((blob) => ({ path: blob.path, mode: "100644", type: "blob", sha: blob.sha }));
+if (baseTree) {
+  const localPaths = new Set(blobs.map((blob) => blob.path));
+  const remote = await api(`/repos/${owner}/${name}/git/trees/${baseTree}?recursive=1`, { token });
+  const removed = [];
+  for (const entry of remote.tree ?? []) {
+    if (entry.type !== "blob" || localPaths.has(entry.path)) continue;
+    removed.push(entry.path);
+    treeEntries.push({ path: entry.path, mode: entry.mode ?? "100644", type: "blob", sha: null });
+  }
+  if (removed.length > 0) {
+    log(`删除远端多余文件 ${removed.length} 个：`);
+    for (const path of removed.slice(0, 15)) log(`  - ${path}`);
+    if (removed.length > 15) log(`  … 其余 ${removed.length - 15} 个`);
+  }
+}
+
 const tree = await api(`/repos/${owner}/${name}/git/trees`, {
   method: "POST",
   token,
   body: {
     ...(baseTree ? { base_tree: baseTree } : {}),
-    tree: blobs.map((blob) => ({ path: blob.path, mode: "100644", type: "blob", sha: blob.sha })),
+    tree: treeEntries,
   },
 });
 
@@ -319,7 +341,7 @@ const commit = await api(`/repos/${owner}/${name}/git/commits`, {
   body: {
     message:
       args.message ??
-      "feat: WhaleCast 切片 01 环回 demo（协议切包/重组 + 环回传输 + 合成画面端到端）",
+      "chore: 同步工作区（mirror / WebRTC 路线）",
     tree: tree.sha,
     ...(parents ? { parents } : {}),
   },

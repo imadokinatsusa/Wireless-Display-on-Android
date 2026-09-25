@@ -43,7 +43,9 @@ object CaptureSpec {
     }
 
     fun bitRateFor(width: Int, height: Int, frameRate: Int = FRAME_RATE): Int {
-        val estimate = width.toLong() * height.toLong() * frameRate * BITS_PER_PIXEL_PER_FRAME
+        // 末尾的 toLong() 不能省：Long * Double 会被推成 Double，
+        // 下面的 coerceIn(Long, Long) 就会类型不匹配（CI 上炸过一次）。
+        val estimate = (width.toLong() * height.toLong() * frameRate * BITS_PER_PIXEL_PER_FRAME).toLong()
         return estimate.coerceIn(MIN_BIT_RATE.toLong(), MAX_BIT_RATE.toLong()).toInt()
     }
 }

@@ -11,6 +11,14 @@ package com.mirror.cast.signal
  */
 sealed interface SignalingMessage {
 
+    /**
+     * 握手消息：连接双方各自声明自己的连接码。
+     *
+     * 它是**唯一**的访问控制：连接码不匹配就断开，避免把屏幕投给局域网里
+     * 某个陌生设备。媒体本身仍由媒体栈加密，这一层只解决"投给谁"。
+     */
+    data class Hello(val code: String) : SignalingMessage
+
     /** 发起方发来的会话描述。 */
     data class Offer(val sdp: String) : SignalingMessage
 
@@ -42,6 +50,7 @@ object SignalingCodec {
     private const val CANDIDATE_PREFIX = "CANDIDATE\t"
 
     fun encode(message: SignalingMessage): ByteArray = when (message) {
+        is SignalingMessage.Hello -> withHead("HELLO", message.code)
         is SignalingMessage.Offer -> withHead("OFFER", message.sdp)
         is SignalingMessage.Answer -> withHead("ANSWER", message.sdp)
         is SignalingMessage.Candidate ->
@@ -59,6 +68,7 @@ object SignalingCodec {
 
         return when {
             head == "BYE" -> SignalingMessage.Bye
+            head == "HELLO" -> SignalingMessage.Hello(body)
             head == "OFFER" -> SignalingMessage.Offer(body)
             head == "ANSWER" -> SignalingMessage.Answer(body)
             head.startsWith(CANDIDATE_PREFIX) -> {

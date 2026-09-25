@@ -39,8 +39,14 @@ class SignalingCodecTest {
     }
 
     @Test
+    fun helloRoundTrip() {
+        val message = SignalingMessage.Hello("ABC234")
+        assertEquals(message, SignalingCodec.decode(SignalingCodec.encode(message)))
+    }
+
+    @Test
     fun unknownTypeIsRejected() {
-        assertNull(SignalingCodec.decode("HELLO\nworld".toByteArray(Charsets.UTF_8)))
+        assertNull(SignalingCodec.decode("PING\nworld".toByteArray(Charsets.UTF_8)))
     }
 
     @Test

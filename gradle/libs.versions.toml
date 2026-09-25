@@ -12,9 +12,11 @@ espresso = "3.6.1"
 compileSdk = "35"
 minSdk = "29"
 targetSdk = "35"
-# 传输 + 媒体栈（libwebrtc 的预编译发行版，Maven Central）。
-# 选它而不是 io.github.webrtc-sdk:android 的原因：体积更小、Apache-2.0、自带 R8 规则。
-webrtcAndroid = "1.3.10"
+# 传输 + 媒体栈（libwebrtc 的预编译发行版，Maven Central，LiveKit 维护）。
+# 选 m150 而不是 io.getstream:stream-webrtc-android 的原因：系统声音内录需要
+# setAudioRecordEnabled(false) + setAudioBufferCallback(...) 这对 API，
+# 而 stream 版没有前者；"音频不做通不发版"是 M1 的硬要求。见 docs/adr/0001。
+webrtcAndroid = "150.7871.01"
 
 [libraries]
 # 纯 JVM 核心（可脱离 Android 单测）
@@ -23,7 +25,7 @@ kotlinx-coroutines-test = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-t
 junit = { module = "junit:junit", version.ref = "junit" }
 
 # 传输 + 媒体栈
-webrtc-android = { module = "io.getstream:stream-webrtc-android", version.ref = "webrtcAndroid" }
+webrtc-android = { module = "io.github.webrtc-sdk:android", version.ref = "webrtcAndroid" }
 
 # Android / Compose
 androidx-core-ktx = { module = "androidx.core:core-ktx", version.ref = "coreKtx" }
