@@ -9,7 +9,6 @@ import com.mirror.cast.SessionState
 import com.mirror.cast.signal.SignalingClient
 import com.mirror.cast.signal.SignalingMessage
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob

@@ -7,7 +7,6 @@ import com.mirror.cast.signal.SignalingChannel
 import com.mirror.cast.signal.SignalingMessage
 import com.mirror.cast.signal.SignalingServer
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
