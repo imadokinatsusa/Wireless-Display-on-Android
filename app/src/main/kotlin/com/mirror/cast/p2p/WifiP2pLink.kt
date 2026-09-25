@@ -193,6 +193,23 @@ class WifiP2pLink(private val context: Context) {
             .onFailure { _status.update { status -> status.copy(message = "连接失败：${it.message}") } }
     }
 
+    /**
+     * 清掉可能残留的 P2P 组 —— 进程被强杀时留下的那种。
+     *
+     * 为什么要它：Wi-Fi Direct 的组是**系统级、跨进程**的。App 被划掉或被系统清理时，
+     * `onDispose` 根本没机会跑，那个组就可能留在系统里**继续占着 Wi-Fi 射频** ——
+     * 表现就是网速变慢、别的投屏软件连不上。所以每次启动先主动收拾一次。
+     */
+    fun cleanupStaleGroup() {
+        val wifiP2p = manager ?: return
+        val current = channel
+            ?: runCatching { wifiP2p.initialize(context, Looper.getMainLooper(), null) }
+                .getOrNull()
+                ?.also { channel = it }
+            ?: return
+        runCatching { wifiP2p.removeGroup(current, null) }
+    }
+
     /** 拆组并注销广播。 */
     fun stop() {
         val wifiP2p = manager
