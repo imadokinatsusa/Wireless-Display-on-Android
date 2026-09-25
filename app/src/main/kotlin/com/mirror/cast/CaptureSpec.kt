@@ -61,6 +61,28 @@ object CaptureSpec {
         return align((sourceWidth * scale).toInt()) to align((sourceHeight * scale).toInt())
     }
 
+    /**
+     * 画质档位：分辨率上限 + 码率上限**联动**。
+     *
+     * 只调编码输出，不碰采集 —— 虚拟屏尺寸必须与屏幕一致（Android 14 的要求）。
+     * 档位同时给出码率，是因为"只降分辨率不降码率"并不会省带宽。
+     */
+    enum class Quality(val label: String, val maxLongEdge: Int, val maxBitrate: Int) {
+        /** 不缩放，直接用屏幕真实尺寸 —— 最清晰也最吃算力，自适应不会主动升到它。 */
+        Source("原始", 0, 12_000_000),
+        Sharp("高清", 1920, 8_000_000),
+        Balanced("均衡", 1600, 5_000_000),
+        Smooth("流畅", 1280, 3_000_000),
+        Data("省流", 960, 1_500_000),
+    }
+
+    /** 默认档位：高清（1080p 级 / 8Mbps）。 */
+    val DEFAULT_QUALITY: Quality = Quality.Sharp
+
+    /** 由名字取档位（服务与界面之间只传字符串，免得跨进程传枚举）。 */
+    fun qualityOf(name: String?): Quality =
+        Quality.entries.firstOrNull { it.name == name } ?: DEFAULT_QUALITY
+
     private fun align(value: Int): Int = maxOf(ALIGNMENT, value / ALIGNMENT * ALIGNMENT)
 
     fun bitRateFor(width: Int, height: Int, frameRate: Int = FRAME_RATE): Int {

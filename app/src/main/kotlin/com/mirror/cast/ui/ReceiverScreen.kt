@@ -1,7 +1,9 @@
 package com.mirror.cast.ui
 
 import android.app.Activity
+import android.content.Intent
 import android.os.Build
+import android.provider.Settings
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -10,6 +12,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -40,6 +43,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
@@ -55,17 +59,14 @@ import org.webrtc.SurfaceViewRenderer
 /**
  * 接收端：亮出连接码 → 等发送端来连 → 像看视频一样看画面。
  *
- * 交互照播放器来：
- * - **一开始投屏就自动进全屏、并且不显示任何按钮**（最沉浸的状态）；
- * - **点画面**唤出/收起控制层，全屏时 3 秒无操作自动淡出；
- * - 控制层是**磨砂玻璃**质感（半透明深色 + 圆角 + 细描边）；
- * - 双指缩放（1×–6×）+ 单指拖动看细节；
- * - 退出用 [ReceiverSession.shutdown]（会话自带 scope），
- *   不用 `rememberCoroutineScope` —— 它随 composable 销毁被取消，
- *   那样 Bye 发不出去，就成了"接收端已退出、发送端还显示投屏中"。
+ * 播放器式交互：
+ * - 一开始投屏就自动全屏、且不显示任何按钮；
+ * - 点画面唤出/收起控制层，全屏时 3 秒自动淡出；
+ * - 控制层是磨砂玻璃面板，按钮做成小号胶囊（不是一排大按钮）；
+ * - 双指缩放（1x-6x）+ 单指拖动；沉浸式隐藏系统栏。
  *
- * 旋转屏幕不会断开：Activity 声明了 configChanges（见 AndroidManifest），
- * 旋转不重建、会话与画面都留在原地。
+ * 对端停止后不会停在"已停止"：会话自己回去继续等下一个（诊断行会写"继续等待"）。
+ * 退出用 ReceiverSession.shutdown（会话自带 scope）—— 用界面 scope 会因被取消而发不出 Bye。
  */
 @Composable
 fun ReceiverScreen(onBack: () -> Unit) {
@@ -96,13 +97,12 @@ fun ReceiverScreen(onBack: () -> Unit) {
     val state by session.state.collectAsState()
 
     LaunchedEffect(session) {
-        // 先把监听端口准备好，再开始广播连接码 —— 否则对端拿到的是无效端口
         session.prepare()
         broadcaster.start()
         session.start(scope)
     }
 
-    // ★ 一开始投屏：自动全屏、收起按钮
+    // 一开始投屏：自动全屏、收起按钮
     LaunchedEffect(state) {
         if (state is SessionState.Streaming) {
             fullscreen = true
@@ -120,7 +120,6 @@ fun ReceiverScreen(onBack: () -> Unit) {
         )
     }
 
-    // 播放器手感：全屏且控制层可见时，3 秒后自动淡出
     LaunchedEffect(controlsVisible, fullscreen) {
         if (fullscreen && controlsVisible) {
             delay(3_000)
@@ -161,7 +160,6 @@ fun ReceiverScreen(onBack: () -> Unit) {
                 .clipToBounds(),
         )
 
-        // 还没开始投屏时才显示连接码，开始投屏后一切让位给画面
         if (state !is SessionState.Streaming) {
             GlassPanel(
                 modifier = Modifier
@@ -180,10 +178,17 @@ fun ReceiverScreen(onBack: () -> Unit) {
                     color = Color.White,
                 )
                 Text(
-                    text = "在发送端选择「$deviceName」；本机 IP 可在系统设置里查看。",
+                    text = "发送端选「$deviceName」；若发送端开了热点，请先在系统设置里连上它。",
                     style = MaterialTheme.typography.bodySmall,
                     color = Color(0xFFB0B0B0),
                 )
+                SmallButton(text = "打开 Wi-Fi 设置") {
+                    runCatching {
+                        context.startActivity(
+                            Intent(Settings.ACTION_WIFI_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                        )
+                    }
+                }
             }
         }
 
@@ -191,12 +196,10 @@ fun ReceiverScreen(onBack: () -> Unit) {
             GlassPanel(
                 modifier = Modifier
                     .align(Alignment.TopStart)
-                    .padding(top = 8.dp),
+                    .padding(top = 6.dp),
             ) {
-                TextButton(
-                    onClick = { if (fullscreen) fullscreen = false else onBack() },
-                ) {
-                    Text(text = if (fullscreen) "↙ 退出全屏" else "← 返回", color = Color.White)
+                SmallButton(text = if (fullscreen) "< 退出全屏" else "<- 返回") {
+                    if (fullscreen) fullscreen = false else onBack()
                 }
             }
 
@@ -208,26 +211,25 @@ fun ReceiverScreen(onBack: () -> Unit) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
                 ) {
-                    TextButton(onClick = { fullscreen = !fullscreen }) {
-                        Text(text = if (fullscreen) "▣ 窗口" else "⛶ 全屏", color = Color.White)
+                    SmallButton(text = if (fullscreen) "窗口" else "全屏") {
+                        fullscreen = !fullscreen
                     }
-                    TextButton(onClick = { fillScreen = !fillScreen }) {
-                        Text(text = if (fillScreen) "◱ 填充" else "◱ 适应", color = Color.White)
+                    SmallButton(text = if (fillScreen) "填充" else "适应") {
+                        fillScreen = !fillScreen
                     }
-                    TextButton(onClick = reset) {
-                        Text(text = "⟲ 复位", color = Color.White)
-                    }
+                    SmallButton(text = "复位") { reset() }
                     Spacer(modifier = Modifier.weight(1f))
                     Text(
-                        text = "%.1f×".format(zoomState.value),
-                        style = MaterialTheme.typography.bodySmall,
+                        text = "%.1fx".format(zoomState.value),
+                        style = MaterialTheme.typography.labelSmall,
                         color = Color(0xFFB0B0B0),
                     )
                 }
                 Text(
                     text = diagnostics.line(),
-                    style = MaterialTheme.typography.bodySmall,
+                    style = MaterialTheme.typography.labelSmall,
                     fontFamily = FontFamily.Monospace,
                     color = Color(0xFFB0B0B0),
                 )
@@ -236,11 +238,22 @@ fun ReceiverScreen(onBack: () -> Unit) {
     }
 }
 
+/** 播放器式小按钮：胶囊、小字号、无多余内边距。 */
+@Composable
+private fun SmallButton(text: String, onClick: () -> Unit) {
+    TextButton(
+        onClick = onClick,
+        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
+    ) {
+        Text(text = text, color = Color.White, fontSize = 13.sp)
+    }
+}
+
 /**
  * 磨砂玻璃面板：半透明深色 + 圆角 + 细描边。
  *
  * 真正的背景模糊需要 API 31+ 且对 SurfaceView（独立图层）无效，
- * 所以这里用"半透明 + 圆角 + 亮边"来做出同样的观感。
+ * 所以这里用"半透明 + 圆角 + 亮边"做出同样的观感。
  */
 @Composable
 private fun GlassPanel(
@@ -250,11 +263,11 @@ private fun GlassPanel(
     val shape = RoundedCornerShape(18.dp)
     Column(
         modifier = modifier
-            .padding(horizontal = 12.dp, vertical = 10.dp)
+            .padding(horizontal = 10.dp, vertical = 8.dp)
             .clip(shape)
             .background(Color(0xB3121212))
             .border(1.dp, Color(0x22FFFFFF), shape)
-            .padding(horizontal = 14.dp, vertical = 10.dp),
+            .padding(horizontal = 12.dp, vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(4.dp),
         content = content,
     )
@@ -281,8 +294,8 @@ private fun SystemBarsEffect(hidden: Boolean) {
 /**
  * 画面本体：渲染器 + 图层变换 + 手势。
  *
- * 变换走 `graphicsLayer` 的 lambda（绘制阶段读 State），捏合缩放不触发重组。
- * 点按与缩放分在两个 `pointerInput`：单指点是"显隐控制层"，多指才是缩放。
+ * 变换走 graphicsLayer 的 lambda（绘制阶段读 State），捏合缩放不触发重组。
+ * 点按与缩放分在两个 pointerInput：单指点是"显隐控制层"，多指才是缩放。
  */
 @Composable
 private fun VideoSurface(
