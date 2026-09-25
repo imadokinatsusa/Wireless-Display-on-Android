@@ -97,6 +97,32 @@ fun SenderContent(lastCrash: String? = null) {
     val p2p = remember(context) { WifiP2pLink(context) }
     val p2pStatus by p2p.status.collectAsState()
     var pendingP2p by remember { mutableStateOf<CastRequest?>(null) }
+
+    /** Wi-Fi Direct 的运行时权限：Android 13+ 是「附近的设备」，更早的版本是位置。 */
+    val p2pPermission = remember {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            Manifest.permission.NEARBY_WIFI_DEVICES
+        } else {
+            Manifest.permission.ACCESS_FINE_LOCATION
+        }
+    }
+    var p2pGranted by remember {
+        mutableStateOf(
+            ContextCompat.checkSelfPermission(context, p2pPermission) ==
+                PackageManager.PERMISSION_GRANTED,
+        )
+    }
+
+    // 权限拿到之后再开始搜索 —— 没权限时 discover 只会静默失败
+    val p2pPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        p2pGranted = granted
+        if (granted && pendingP2p != null) {
+            p2p.start()
+            p2p.discover()
+        }
+    }
     var bitrateTier by remember { mutableStateOf(CaptureSpec.DEFAULT_BITRATE_TIER) }
     var autoQuality by remember { mutableStateOf(true) }
     var showBitrate by remember { mutableStateOf(false) }
@@ -184,8 +210,12 @@ fun SenderContent(lastCrash: String? = null) {
         if (request.viaWifiDirect) {
             // 离线：先建链路，地址等链路好了再定
             pendingP2p = request
-            p2p.start()
-            p2p.discover()
+            if (p2pGranted) {
+                p2p.start()
+                p2p.discover()
+            } else {
+                p2pPermissionLauncher.launch(p2pPermission)
+            }
         } else {
             pendingDirect = request
         }

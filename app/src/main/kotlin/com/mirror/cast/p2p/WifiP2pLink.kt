@@ -4,6 +4,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.net.wifi.WifiManager
 import android.net.wifi.WpsInfo
 import android.net.wifi.p2p.WifiP2pConfig
 import android.net.wifi.p2p.WifiP2pDevice
@@ -130,6 +131,7 @@ class WifiP2pLink(private val context: Context) {
     fun createGroup() {
         val wifiP2p = manager ?: return
         val current = channel ?: return
+        if (!wifiRadioReady()) return
         _status.update { it.copy(message = "正在建组…") }
         runCatching { wifiP2p.createGroup(current, actionListener("建组")) }
             .onFailure { _status.update { status -> status.copy(message = "建组失败：${it.message}") } }
@@ -139,11 +141,28 @@ class WifiP2pLink(private val context: Context) {
     fun discover() {
         val wifiP2p = manager ?: return
         val current = channel ?: return
+        if (!wifiRadioReady()) return
         _status.update { it.copy(searching = true, message = "正在搜索附近设备…") }
         runCatching { wifiP2p.discoverPeers(current, actionListener("搜索")) }
             .onFailure {
                 _status.update { status -> status.copy(searching = false, message = "搜索失败：${it.message}") }
             }
+    }
+
+    /**
+     * Wi-Fi 射频必须是打开的。
+     *
+     * 这是最容易踩的一脚：**Wi-Fi Direct 不需要连上任何网络，但 Wi-Fi 开关必须开着** ——
+     * 它用的是 Wi-Fi 射频本身。为了"离线投屏"特地把 Wi-Fi 关掉的设备，
+     * 建组会直接返回 `ERROR`，而系统给的原因就只有"内部错误"四个字。
+     */
+    private fun wifiRadioReady(): Boolean {
+        val wifi = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
+        if (wifi?.isWifiEnabled == true) return true
+        _status.update {
+            it.copy(message = "Wi-Fi 开关没打开。Wi-Fi Direct 不用连任何网络，但射频必须开着 —— 请先打开 Wi-Fi")
+        }
+        return false
     }
 
     /**
@@ -249,7 +268,9 @@ class WifiP2pLink(private val context: Context) {
     private fun describe(reason: Int): String = when (reason) {
         WifiP2pManager.P2P_UNSUPPORTED -> "这台设备不支持 Wi-Fi Direct"
         WifiP2pManager.BUSY -> "系统正忙，稍后再试"
-        WifiP2pManager.ERROR -> "系统内部错误"
+        WifiP2pManager.ERROR ->
+            "系统报错。先确认 Wi-Fi 开关是打开的（不用连任何网络，但射频必须开着）；" +
+                "另外 Android 13 起还需要授予「附近的设备」权限"
         else -> "错误码 $reason"
     }
 }

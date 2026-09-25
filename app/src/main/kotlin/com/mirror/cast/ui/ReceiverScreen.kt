@@ -1,9 +1,13 @@
 package com.mirror.cast.ui
 
+import android.Manifest
 import android.app.Activity
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.os.Build
 import android.provider.Settings
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -59,6 +63,7 @@ import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.core.content.ContextCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import com.mirror.cast.Broadcaster
@@ -131,6 +136,44 @@ fun ReceiverContent(onFullscreenChange: (Boolean) -> Unit = {}) {
      */
     val p2p = remember(context) { WifiP2pLink(context) }
     val p2pStatus by p2p.status.collectAsState()
+
+    /**
+     * Wi-Fi Direct 的**运行时**权限。
+     *
+     * Android 13 起叫「附近的设备」（`NEARBY_WIFI_DEVICES`），更早的版本用位置权限。
+     * **只在 Manifest 里声明是不够的** —— 不申请就直接建组，系统只会回一句
+     * "系统内部错误"，根本不提示是权限问题（踩过）。
+     */
+    val p2pPermission = remember {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            Manifest.permission.NEARBY_WIFI_DEVICES
+        } else {
+            Manifest.permission.ACCESS_FINE_LOCATION
+        }
+    }
+    var p2pGranted by remember {
+        mutableStateOf(
+            ContextCompat.checkSelfPermission(context, p2pPermission) ==
+                PackageManager.PERMISSION_GRANTED,
+        )
+    }
+    var wantP2pGroup by remember { mutableStateOf(false) }
+
+    val p2pPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        p2pGranted = granted
+        if (granted) wantP2pGroup = true
+    }
+
+    // 权限是异步给的：拿到之后才真正建组
+    LaunchedEffect(wantP2pGroup, p2pGranted) {
+        if (wantP2pGroup && p2pGranted) {
+            wantP2pGroup = false
+            p2p.start()
+            p2p.createGroup()
+        }
+    }
 
     // 二维码里的地址必须跟着网络走：换 Wi-Fi / 连上热点后 IP 就变了，
     // 不刷新的话对方扫到的是一个连不上的旧地址
@@ -289,9 +332,10 @@ fun ReceiverContent(onFullscreenChange: (Boolean) -> Unit = {}) {
                     onWifiDirect = {
                         if (p2pStatus.groupOwnerAddress != null) {
                             p2p.stop()
+                        } else if (p2pGranted) {
+                            wantP2pGroup = true
                         } else {
-                            p2p.start()
-                            p2p.createGroup()
+                            p2pPermissionLauncher.launch(p2pPermission)
                         }
                     },
                     onHotspot = {
