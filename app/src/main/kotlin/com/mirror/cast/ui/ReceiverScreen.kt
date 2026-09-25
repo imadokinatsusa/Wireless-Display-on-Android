@@ -238,19 +238,15 @@ fun ReceiverContent(onFullscreenChange: (Boolean) -> Unit = {}) {
         broadcaster.start()
         responder.start()
         session.start(scope)
-        // ⚠️ 只在**真的一个可用网络都没有**时才自动建组。
+        // ⚠️ 这里**刻意什么都不做** —— 绝不自动建 Wi-Fi Direct 组。
         //
-        // 手机/平板基本都是单射频：自动建组会把本机从 Wi-Fi 上拽下来
-        // （地址变成 192.168.49.1），而发送端还留在 Wi-Fi 网段 ——
-        // 结果就是"连不上、没画面"（踩过）。想手动用 Wi-Fi Direct 的话，
-        // 卡片下面就是「建组」按钮，点它才建。
-        if (localIp == null) {
-            if (p2pGranted) {
-                p2p.createGroup()
-            } else {
-                p2pPermissionLauncher.launch(p2pPermission)
-            }
-        }
+        // 建组会切断 Wi-Fi（单射频设备必然如此），这是**破坏性**动作，不该自动做。
+        // 实测结论摆在这儿：手机当接收端时 createGroup 多半直接失败，
+        // 于是它留在 Wi-Fi、一切正常；而小米平板 5（MIUI 14）建组**成功**，
+        // Wi-Fi 被切走、地址变成 192.168.49.1，发送端就再也找不到它 ——
+        // 表现正是"投不了、没画面、一直连接中"。
+        //
+        // 想用 Wi-Fi Direct 的话，卡片下面就是「建组」按钮，由用户自己决定。
     }
 
     // 断开之后清掉渲染器里的最后一帧：否则画面停在最后一帧，
