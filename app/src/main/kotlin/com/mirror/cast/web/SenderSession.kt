@@ -385,6 +385,13 @@ class SenderSession(
         if (autoQualityValue) maybeSwitchQuality(fractionLost, roundTripMs)
     }
 
+    /**
+     * 读一次媒体栈统计。
+     *
+     * 注意层次：`getStats` 必须在 signaling 线程调用，而
+     * `suspendCancellableCoroutine` 的 block **不是** suspend lambda，
+     * 所以 `onSignaling` 必须在**外层** —— 反过来写会编译失败（踩过）。
+     */
     private suspend fun fetchStats(): RTCStatsReport? {
         val connection = peerConnection ?: return null
         return withTimeoutOrNull(STATS_TIMEOUT_MILLIS) {
@@ -395,9 +402,8 @@ class SenderSession(
                             override fun onStatsDelivered(report: RTCStatsReport?) {
                                 if (continuation.isActive) continuation.resume(report)
                             }
-                            },
-                        )
-                    }
+                        },
+                    )
                 }
             }
         }
@@ -426,7 +432,7 @@ class SenderSession(
                     val next = tiers[index + 1]
                     setQuality(next)
                     _diagnostics.update {
-                        it.copy(state = "网络拥塞（丢包 ${"%.1f%%".format(fractionLost * 100)}），自动降到「${next.label}」")
+                        it.copy(state = "网络拥塞，自动降到「${next.label}」")
                     }
                 }
             }
