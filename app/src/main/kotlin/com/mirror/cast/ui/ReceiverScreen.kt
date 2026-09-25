@@ -4,6 +4,7 @@ import android.app.Activity
 import android.content.Intent
 import android.os.Build
 import android.provider.Settings
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -47,10 +48,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
@@ -63,7 +66,10 @@ import com.mirror.cast.LocalAddress
 import com.mirror.cast.MirrorApplication
 import com.mirror.cast.NetworkWatcher
 import com.mirror.cast.SessionState
+import com.mirror.cast.discovery.CastLink
+import com.mirror.cast.discovery.CastTarget
 import com.mirror.cast.discovery.ConnectCode
+import com.mirror.cast.qr.QrCode
 import com.mirror.cast.web.ReceiverSession
 import kotlinx.coroutines.launch
 import org.webrtc.RendererCommon
@@ -100,9 +106,14 @@ fun ReceiverContent(onFullscreenChange: (Boolean) -> Unit = {}) {
         )
     }
 
+    // 二维码里的地址必须跟着网络走：换 Wi-Fi / 连上热点后 IP 就变了，
+    // 不刷新的话对方扫到的是一个连不上的旧地址
+    var localIp by remember { mutableStateOf(LocalAddress.ipv4()) }
+
     // 网络接口一变就重启广播：接收端换了接口（连上热点）后必须重新广播，否则发送端搜不到
     val networkWatcher = remember(context) {
         NetworkWatcher(context) {
+            localIp = LocalAddress.ipv4()
             broadcaster.stop()
             broadcaster.start()
         }
@@ -122,6 +133,17 @@ fun ReceiverContent(onFullscreenChange: (Boolean) -> Unit = {}) {
 
     val state by session.state.collectAsState()
     val configuration = LocalConfiguration.current
+
+    // 扫码直连用的链接：地址 + 端口 + 连接码全塞进二维码，
+    // 对方扫一下就能直连，完全不依赖广播能否穿过路由器
+    val density = LocalDensity.current
+    val qrPixels = remember(density) { with(density) { QR_SIZE_DP.roundToPx() } }
+    val castLink = remember(localIp, code, state, session.signalingPort) {
+        val host = localIp
+        val port = session.signalingPort
+        if (host == null || port <= 0) null else CastLink.encode(CastTarget(host, port, code, deviceName))
+    }
+    val qrImage = remember(castLink, qrPixels) { castLink?.let { QrCode.bitmap(it, qrPixels) } }
 
     LaunchedEffect(session) {
         networkWatcher.start()
@@ -206,6 +228,7 @@ fun ReceiverContent(onFullscreenChange: (Boolean) -> Unit = {}) {
                 ConnectionCard(
                     code = code,
                     deviceName = deviceName,
+                    qr = qrImage,
                     statusLine = diagnostics.line(),
                     onWifiSettings = {
                         runCatching {
@@ -342,6 +365,9 @@ fun ReceiverContent(onFullscreenChange: (Boolean) -> Unit = {}) {
     }
 }
 
+/** 二维码边长：够对方一眼扫到，又不至于把小屏里的等待卡撑爆。 */
+private val QR_SIZE_DP = 148.dp
+
 private enum class ExpandedRow { None, Quality, FrameRate }
 
 /** 功能行用的小图标按钮：底色走主题，与发送端的图标块同一语言。 */
@@ -378,6 +404,7 @@ private fun SmallIconButton(
 private fun ConnectionCard(
     code: String,
     deviceName: String,
+    qr: ImageBitmap?,
     statusLine: String,
     onWifiSettings: () -> Unit,
     modifier: Modifier = Modifier,
@@ -404,8 +431,23 @@ private fun ConnectionCard(
             color = Color(0xFF8E8E93),
         )
         ConnectCodeDisplay(code = ConnectCode.pretty(code), color = Color.White)
+        if (qr != null) {
+            Text(
+                text = "用发送端「扫码」直连",
+                style = MaterialTheme.typography.bodySmall,
+                color = Color(0xFFB0B0B0),
+            )
+            Image(
+                bitmap = qr,
+                contentDescription = "投屏二维码",
+                modifier = Modifier
+                    .size(QR_SIZE_DP)
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(Color.White),
+            )
+        }
         Text(
-            text = "在发送端点「$deviceName」",
+            text = "或在发送端点「$deviceName」",
             style = MaterialTheme.typography.bodySmall,
             color = Color(0xFFB0B0B0),
         )

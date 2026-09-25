@@ -17,6 +17,9 @@ targetSdk = "35"
 # setAudioRecordEnabled(false) + setAudioBufferCallback(...) 这对 API，
 # 而 stream 版没有前者；"音频不做通不发版"是 M1 的硬要求。见 docs/adr/0001。
 webrtcAndroid = "150.7871.01"
+# 扫码直连：二维码生成 + 扫描
+zxing = "3.5.3"
+zxingEmbedded = "4.3.0"
 
 [libraries]
 # 纯 JVM 核心（可脱离 Android 单测）
@@ -26,6 +29,8 @@ junit = { module = "junit:junit", version.ref = "junit" }
 
 # 传输 + 媒体栈
 webrtc-android = { module = "io.github.webrtc-sdk:android", version.ref = "webrtcAndroid" }
+zxing-core = { module = "com.google.zxing:core", version.ref = "zxing" }
+zxing-embedded = { module = "com.journeyapps:zxing-android-embedded", version.ref = "zxingEmbedded" }
 
 # Android / Compose
 androidx-core-ktx = { module = "androidx.core:core-ktx", version.ref = "coreKtx" }

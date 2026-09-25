@@ -62,6 +62,10 @@ dependencies {
     // 这是我们"照抄成熟实现"的核心决策，见 docs/adr/0001。
     implementation(libs.webrtc.android)
 
+    // 扫码直连：不依赖广播，热点/隔离路由也能连
+    implementation(libs.zxing.core)
+    implementation(libs.zxing.embedded)
+
     implementation(libs.kotlinx.coroutines.core)
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.activity.compose)

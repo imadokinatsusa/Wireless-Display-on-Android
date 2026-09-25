@@ -3,6 +3,7 @@ package com.mirror.cast.ui
 import android.Manifest
 import android.app.Activity
 import android.content.Context
+import android.content.pm.PackageManager
 import android.content.Intent
 import android.media.projection.MediaProjectionManager
 import android.os.Build
@@ -22,6 +23,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.PhoneAndroid
+import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Stop
@@ -46,6 +48,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
+import com.journeyapps.barcodescanner.ScanContract
+import com.journeyapps.barcodescanner.ScanOptions
 import com.mirror.cast.CaptureSpec
 import com.mirror.cast.Discovery
 import com.mirror.cast.FailedSession
@@ -55,8 +60,8 @@ import com.mirror.cast.NetworkWatcher
 import com.mirror.cast.MirrorService
 import com.mirror.cast.QualityAdjustable
 import com.mirror.cast.SessionRegistry
+import com.mirror.cast.discovery.CastLink
 import com.mirror.cast.discovery.ConnectCode
-import com.mirror.cast.discovery.DiscoveredDevice
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -75,7 +80,16 @@ fun SenderContent(lastCrash: String? = null) {
     val discovery = remember(context) { Discovery(context, scope) }
     val devices by discovery.devices.collectAsState()
     val active by SessionRegistry.active.collectAsState()
-    var pending: DiscoveredDevice? by remember { mutableStateOf(null) }
+    // 扫码与广播搜索最终都归结为"往哪儿投"，所以共用同一个待投目标
+    var pending: CastRequest? by remember { mutableStateOf(null) }
+    var scanHint by remember { mutableStateOf<String?>(null) }
+    var wantScan by remember { mutableStateOf(false) }
+    var cameraGranted by remember {
+        mutableStateOf(
+            ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) ==
+                PackageManager.PERMISSION_GRANTED,
+        )
+    }
     var bitrateTier by remember { mutableStateOf(CaptureSpec.DEFAULT_BITRATE_TIER) }
     var autoQuality by remember { mutableStateOf(true) }
     var showBitrate by remember { mutableStateOf(false) }
@@ -110,9 +124,9 @@ fun SenderContent(lastCrash: String? = null) {
     val projectionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult(),
     ) { result ->
-        val device = pending
+        val target = pending
         pending = null
-        if (device == null) return@rememberLauncherForActivityResult
+        if (target == null) return@rememberLauncherForActivityResult
         val data = result.data
         if (result.resultCode != Activity.RESULT_OK || data == null) {
             SessionRegistry.set(FailedSession("你拒绝了屏幕授权"))
@@ -122,9 +136,9 @@ fun SenderContent(lastCrash: String? = null) {
             context = context,
             resultCode = result.resultCode,
             projectionData = data,
-            host = device.host,
-            signalingPort = device.beacon.tcpPort,
-            code = device.beacon.code,
+            host = target.host,
+            signalingPort = target.port,
+            code = target.code,
             spec = spec,
             quality = quality,
             frameRate = fps,
@@ -135,6 +149,45 @@ fun SenderContent(lastCrash: String? = null) {
     val notificationPermission = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
     ) { }
+
+    val cameraPermission = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        cameraGranted = granted
+        if (granted) {
+            wantScan = true
+        } else {
+            scanHint = "没有相机权限，扫不了码"
+        }
+    }
+
+    val scanner = rememberLauncherForActivityResult(ScanContract()) { result ->
+        val contents = result.contents
+        if (contents == null) return@rememberLauncherForActivityResult // 用户取消了扫码
+        val target = CastLink.decode(contents)
+        if (target == null) {
+            scanHint = "这不是本应用的投屏二维码"
+            return@rememberLauncherForActivityResult
+        }
+        scanHint = null
+        pending = CastRequest(target.host, target.port, target.code, target.deviceName)
+        val manager = context.getSystemService(MediaProjectionManager::class.java)
+        projectionLauncher.launch(manager.createScreenCaptureIntent())
+    }
+
+    // 相机权限是异步的：拿到之后才由这里真正拉起扫码界面
+    LaunchedEffect(wantScan, cameraGranted) {
+        if (wantScan && cameraGranted) {
+            wantScan = false
+            scanner.launch(
+                ScanOptions()
+                    .setDesiredBarcodeFormats(ScanOptions.QR_CODE)
+                    .setPrompt("对准接收端的二维码")
+                    .setBeepEnabled(false)
+                    .setOrientationLocked(false),
+            )
+        }
+    }
 
     DisposableEffect(Unit) {
         discovery.start()
@@ -238,6 +291,20 @@ fun SenderContent(lastCrash: String? = null) {
             GroupSpacer()
 
             SettingsGroup("可用设备") {
+                SettingsRow(
+                    icon = Icons.Filled.QrCodeScanner,
+                    iconTint = IconTints.blue,
+                    title = "扫码直连",
+                    subtitle = scanHint ?: "扫接收端屏幕上的二维码，不必等搜索",
+                    onClick = {
+                        scanHint = null
+                        if (cameraGranted) {
+                            wantScan = true
+                        } else {
+                            cameraPermission.launch(Manifest.permission.CAMERA)
+                        }
+                    },
+                )
                 val found = devices.values.sortedBy { it.beacon.deviceName }
                 if (found.isEmpty()) {
                     SettingsRow(
@@ -260,7 +327,12 @@ fun SenderContent(lastCrash: String? = null) {
                             subtitle = ConnectCode.pretty(device.beacon.code),
                             showDivider = index < found.lastIndex,
                             onClick = {
-                                pending = device
+                                pending = CastRequest(
+                                    host = device.host,
+                                    port = device.beacon.tcpPort,
+                                    code = device.beacon.code,
+                                    deviceName = device.beacon.deviceName,
+                                )
                                 val manager = context.getSystemService(MediaProjectionManager::class.java)
                                 projectionLauncher.launch(manager.createScreenCaptureIntent())
                             },
@@ -335,6 +407,19 @@ fun SenderContent(lastCrash: String? = null) {
         }
     }
 }
+
+/**
+ * 一次投屏请求。
+ *
+ * 扫码与广播搜索最终都归结成这四个字段，后面的授权与启动服务完全共用一条路径 ——
+ * 这样"扫码直连"不是一个特例分支，而只是另一个来源。
+ */
+private data class CastRequest(
+    val host: String,
+    val port: Int,
+    val code: String,
+    val deviceName: String,
+)
 
 private val ColorGray = androidx.compose.ui.graphics.Color(0xFF8E8E93)
 
