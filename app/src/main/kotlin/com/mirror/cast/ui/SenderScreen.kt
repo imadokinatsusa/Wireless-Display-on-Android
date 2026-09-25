@@ -10,7 +10,6 @@ import android.provider.Settings
 import android.view.WindowManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -23,7 +22,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.PhoneAndroid
-import androidx.compose.material.icons.filled.PhotoSizeSelectLarge
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Stop
@@ -61,28 +59,24 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 /**
- * 发送端：Inset Grouped 卡片列表。
+ * 发送端内容（底部页签之一）。
  *
- * - 每组一行：左侧彩色圆角图标块、中间标题、右侧当前值与箭头；
- * - 点行展开可勾选项（iOS 的选择方式），选完自动收起；
- * - 四行参数收进「详细信息」，默认不占版面；
- * - 热点开不起来时给出路（系统设置）。
+ * **分工**：发送端只管**码率上限** —— 这条链路能花多少带宽是它说了算；
+ * 画质与帧率交给**看画面的人**（接收端）在上限之内调。所以这里没有画质/帧率选择。
  *
- * 带宽分工：**发送端定码率上限**，画质与帧率在其之内调（接收端也能调这两项）。
+ * 其余就是必要的东西：网络（热点）、可用设备、当前会话。参数详情默认收起。
  */
 @Composable
-fun SenderScreen(onBack: () -> Unit) {
+fun SenderContent(lastCrash: String? = null) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val discovery = remember(context) { Discovery(context, scope) }
     val devices by discovery.devices.collectAsState()
     val active by SessionRegistry.active.collectAsState()
     var pending: DiscoveredDevice? by remember { mutableStateOf(null) }
-    var quality by remember { mutableStateOf(CaptureSpec.DEFAULT_QUALITY) }
-    var frameTier by remember { mutableStateOf(CaptureSpec.DEFAULT_FRAME_RATE_TIER) }
     var bitrateTier by remember { mutableStateOf(CaptureSpec.DEFAULT_BITRATE_TIER) }
     var autoQuality by remember { mutableStateOf(true) }
-    var expanded by remember { mutableStateOf(Section.None) }
+    var showBitrate by remember { mutableStateOf(false) }
     var showDetails by remember { mutableStateOf(false) }
     val hotspot = remember(context) { HotspotController(context) }
     var hotspotInfo by remember { mutableStateOf<HotspotController.HotspotInfo?>(null) }
@@ -90,9 +84,9 @@ fun SenderScreen(onBack: () -> Unit) {
     var waitSeconds by remember { mutableIntStateOf(0) }
 
     val adjustable = active as? QualityAdjustable
-    val displayHz = remember { context.displayRefreshRate() }
     val spec = remember { CaptureSpec.from(context.resources.displayMetrics) }
-    val fps = CaptureSpec.resolveFps(frameTier, displayHz)
+    val quality = adjustable?.quality ?: CaptureSpec.DEFAULT_QUALITY
+    val fps = adjustable?.frameRate ?: CaptureSpec.DEFAULT_FRAME_RATE
     val (encodeWidth, encodeHeight) = CaptureSpec.encodeSize(spec.width, spec.height, quality.maxLongEdge)
     val budget = if (bitrateTier.kbps > 0) bitrateTier.kbps * 1000 else Int.MAX_VALUE
     val totalBitRate = minOf(quality.maxBitrate, CaptureSpec.bitRateFor(encodeWidth, encodeHeight, fps), budget)
@@ -149,79 +143,23 @@ fun SenderScreen(onBack: () -> Unit) {
             .fillMaxSize()
             .padding(horizontal = 16.dp),
     ) {
-        MirrorTopBar(title = "发送屏幕", onBack = onBack)
+        MirrorTopBar(title = "发送屏幕")
         Column(
             modifier = Modifier
                 .fillMaxSize()
                 .verticalScroll(rememberScrollState()),
         ) {
-            SettingsGroup("画质") {
-                SettingsRow(
-                    icon = Icons.Filled.PhotoSizeSelectLarge,
-                    iconTint = IconTints.purple,
-                    title = "分辨率与码率",
-                    value = quality.label,
-                    showDivider = expanded == Section.Quality,
-                    onClick = { expanded = if (expanded == Section.Quality) Section.None else Section.Quality },
-                )
-                if (expanded == Section.Quality) {
-                    CaptureSpec.Quality.entries.forEachIndexed { index, item ->
-                        CheckRow(
-                            title = "${item.label} · 上限 ${item.maxBitrate / 1_000_000}Mbps",
-                            checked = item == quality,
-                            showDivider = index < CaptureSpec.Quality.entries.lastIndex,
-                        ) {
-                            quality = item
-                            expanded = Section.None
-                            adjustable?.let { target -> scope.launch { target.setQuality(item) } }
-                        }
-                    }
-                }
-            }
-            GroupSpacer()
-
-            SettingsGroup("帧率") {
-                SettingsRow(
-                    icon = Icons.Filled.Speed,
-                    iconTint = IconTints.orange,
-                    title = "目标帧率",
-                    subtitle = "上限为本机屏幕 ${displayHz.toInt()}Hz",
-                    value = "${fps}fps",
-                    showDivider = expanded == Section.FrameRate,
-                    onClick = { expanded = if (expanded == Section.FrameRate) Section.None else Section.FrameRate },
-                )
-                if (expanded == Section.FrameRate) {
-                    CaptureSpec.FrameRateTier.entries.forEachIndexed { index, tier ->
-                        val target = CaptureSpec.resolveFps(tier, displayHz)
-                        CheckRow(
-                            title = if (tier == CaptureSpec.FrameRateTier.FollowDisplay) {
-                                "跟随屏幕（${displayHz.toInt()}Hz）"
-                            } else {
-                                tier.label
-                            },
-                            checked = tier == frameTier,
-                            showDivider = index < CaptureSpec.FrameRateTier.entries.lastIndex,
-                        ) {
-                            frameTier = tier
-                            expanded = Section.None
-                            adjustable?.let { session -> scope.launch { session.setFrameRate(target) } }
-                        }
-                    }
-                }
-            }
-            GroupSpacer()
-
-            SettingsGroup("码率上限") {
+            SettingsGroup("带宽") {
                 SettingsRow(
                     icon = Icons.Filled.Bolt,
                     iconTint = IconTints.red,
-                    title = "带宽预算",
-                    subtitle = "由发送端决定，接收端在此之内调画质",
+                    title = "码率上限",
+                    subtitle = "画质与帧率由接收端在此预算内调整",
                     value = if (bitrateTier.kbps > 0) "${bitrateTier.kbps / 1000}Mbps" else "自动",
-                    showDivider = expanded == Section.Bitrate,
-                    onClick = { expanded = if (expanded == Section.Bitrate) Section.None else Section.Bitrate },
+                    showDivider = showBitrate,
+                    onClick = { showBitrate = !showBitrate },
                 )
-                if (expanded == Section.Bitrate) {
+                if (showBitrate) {
                     CaptureSpec.BitrateTier.entries.forEachIndexed { index, tier ->
                         CheckRow(
                             title = tier.label,
@@ -229,7 +167,7 @@ fun SenderScreen(onBack: () -> Unit) {
                             showDivider = index < CaptureSpec.BitrateTier.entries.lastIndex,
                         ) {
                             bitrateTier = tier
-                            expanded = Section.None
+                            showBitrate = false
                             adjustable?.let { target -> scope.launch { target.setBitrateLimit(tier.kbps) } }
                         }
                     }
@@ -279,7 +217,7 @@ fun SenderScreen(onBack: () -> Unit) {
                 )
                 SettingsRow(
                     icon = Icons.Filled.Settings,
-                    iconTint = Color_Gray,
+                    iconTint = ColorGray,
                     title = "系统无线设置",
                     subtitle = "热点被系统拒绝时去这里手动开",
                     showDivider = false,
@@ -293,7 +231,7 @@ fun SenderScreen(onBack: () -> Unit) {
                 if (found.isEmpty()) {
                     SettingsRow(
                         icon = Icons.Filled.PhoneAndroid,
-                        iconTint = Color_Gray,
+                        iconTint = ColorGray,
                         title = "搜索中…",
                         subtitle = when {
                             discovery.failureReason != null -> "没搜到设备（${discovery.failureReason}）"
@@ -320,8 +258,36 @@ fun SenderScreen(onBack: () -> Unit) {
                 }
             }
 
-            // 参数详情：默认收起
-            Spacer(modifier = Modifier.height(14.dp))
+            active?.let { session ->
+                val diagnostics by session.diagnostics.collectAsState()
+                GroupSpacer()
+                SettingsGroup("当前投屏") {
+                    SettingsRow(
+                        icon = Icons.Filled.Stop,
+                        iconTint = IconTints.red,
+                        title = "停止投屏",
+                        subtitle = diagnostics.line(),
+                        showDivider = false,
+                        onClick = { MirrorService.stop(context) },
+                    )
+                }
+            }
+
+            if (lastCrash != null) {
+                GroupSpacer()
+                SettingsGroup("上次崩溃") {
+                    Text(
+                        text = lastCrash.take(1000),
+                        modifier = Modifier.padding(14.dp),
+                        style = MaterialTheme.typography.bodySmall,
+                        fontFamily = FontFamily.Monospace,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+
+            // 参数详情：一行摘要，点开才展开
+            Spacer(modifier = Modifier.height(12.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
                 IconButton(onClick = { showDetails = !showDetails }) {
                     Icon(
@@ -342,7 +308,7 @@ fun SenderScreen(onBack: () -> Unit) {
                     text = buildString {
                         appendLine("采集 ${spec.width}×${spec.height}（屏幕真实尺寸，不可缩放）")
                         appendLine("编码 ${encodeWidth}×${encodeHeight} @${fps}fps")
-                        appendLine("画质 ${quality.label}（档位上限 ${quality.maxBitrate / 1_000_000}Mbps）")
+                        appendLine("画质 ${quality.label}（由接收端选择）")
                         appendLine("码率上限 ${if (bitrateTier.kbps > 0) "${bitrateTier.kbps / 1000}Mbps" else "自动"}")
                         append("总码率 约 ${"%.1f".format(totalBitRate / 1_000_000.0)}Mbps")
                     },
@@ -353,30 +319,12 @@ fun SenderScreen(onBack: () -> Unit) {
                 )
             }
 
-            // 当前会话
-            active?.let { session ->
-                val diagnostics by session.diagnostics.collectAsState()
-                Spacer(modifier = Modifier.height(16.dp))
-                SettingsGroup("当前投屏") {
-                    SettingsRow(
-                        icon = Icons.Filled.Stop,
-                        iconTint = IconTints.red,
-                        title = "停止投屏",
-                        subtitle = diagnostics.line(),
-                        showDivider = false,
-                        onClick = { MirrorService.stop(context) },
-                    )
-                }
-            }
-
-            Spacer(modifier = Modifier.height(28.dp))
+            Spacer(modifier = Modifier.height(24.dp))
         }
     }
 }
 
-private enum class Section { None, Quality, FrameRate, Bitrate }
-
-private val Color_Gray = androidx.compose.ui.graphics.Color(0xFF8E8E93)
+private val ColorGray = androidx.compose.ui.graphics.Color(0xFF8E8E93)
 
 /** 跳到系统的无线设置（热点开不起来时的出路）。 */
 private fun openWirelessSettings(context: Context) {

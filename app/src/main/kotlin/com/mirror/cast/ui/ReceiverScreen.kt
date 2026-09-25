@@ -22,6 +22,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AspectRatio
+import androidx.compose.material.icons.filled.Cast
 import androidx.compose.material.icons.filled.CenterFocusStrong
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Fullscreen
@@ -72,17 +73,17 @@ import org.webrtc.RendererCommon
 import org.webrtc.SurfaceViewRenderer
 
 /**
- * 接收端：等发送端来连 → 像看视频一样看画面。
+ * 接收端内容（底部页签之一）。
  *
- * 视觉规则：**控制层只有图标**，文字只保留连接码与一行诊断。
- * - 一开始投屏就自动全屏、不显示任何按钮；点画面唤出，3 秒自动淡出；
- * - 底部图标依次是：全屏/小窗、画质、帧率、比例、复位、缩放值；
- * - 点「画质」「帧率」展开一排 chip，选完通过信令发回发送端
- *   （接收端只能在上限之内调这两项，码率上限由发送端定）；
- * - 旋转/尺寸变化会复位缩放并让渲染器重新布局，比例才会真的适应。
+ * 两种形态共用同一块画面（渲染器始终在，切换不会重建）：
+ * - **等待中**：屏幕中央一张深色卡片 —— 连接码、下一步提示、Wi-Fi 设置按钮；
+ * - **已连接**：自动进全屏，控制层只有图标（画质/帧率/比例/复位），点画面显隐、3 秒淡出。
+ *
+ * 分工：**画质与帧率在这里调**（看画面的人最清楚卡不卡、糊不糊），
+ * 通过信令发回发送端；码率上限由发送端设定，这里只显示预算。
  */
 @Composable
-fun ReceiverScreen(onBack: () -> Unit) {
+fun ReceiverContent(onFullscreenChange: (Boolean) -> Unit = {}) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val application = context.applicationContext as MirrorApplication
@@ -120,6 +121,7 @@ fun ReceiverScreen(onBack: () -> Unit) {
         session.start(scope)
     }
 
+    // 一开始投屏：自动全屏、收起按钮
     LaunchedEffect(state) {
         if (state is SessionState.Streaming) {
             fullscreen = true
@@ -128,7 +130,10 @@ fun ReceiverScreen(onBack: () -> Unit) {
         }
     }
 
-    // 旋转 / 尺寸变化：复位缩放平移并重新布局
+    // 全屏状态同步给外壳（它会隐藏底部切换栏）
+    LaunchedEffect(fullscreen) { onFullscreenChange(fullscreen) }
+
+    // 旋转 / 尺寸变化：复位缩放平移并重新布局，比例才会真的适应
     LaunchedEffect(configuration.orientation, configuration.screenWidthDp, configuration.screenHeightDp) {
         zoomState.value = 1f
         offsetXState.value = 0f
@@ -195,62 +200,38 @@ fun ReceiverScreen(onBack: () -> Unit) {
                 .clipToBounds(),
         )
 
-        // 未连接：只给连接码 + 一个去 Wi-Fi 设置的图标
+        // 等待中：中央深色卡片
         if (state !is SessionState.Streaming) {
-            GlassPanel(
-                modifier = Modifier
-                    .align(Alignment.TopCenter)
-                    .fillMaxWidth(),
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    ConnectCodeDisplay(
-                        code = ConnectCode.pretty(code),
-                        modifier = Modifier.weight(1f),
-                        color = Color.White,
-                    )
-                    IconButton(onClick = {
-                        runCatching {
-                            context.startActivity(
-                                Intent(Settings.ACTION_WIFI_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
-                            )
-                        }
-                    }) {
-                        Icon(imageVector = Icons.Filled.Wifi, contentDescription = "Wi-Fi 设置", tint = Color.White)
+            ConnectionCard(
+                code = code,
+                deviceName = deviceName,
+                statusLine = diagnostics.line(),
+                onWifiSettings = {
+                    runCatching {
+                        context.startActivity(
+                            Intent(Settings.ACTION_WIFI_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                        )
                     }
-                }
-                Text(
-                    text = "第 2 步：在发送端点「$deviceName」",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = Color(0xFFB0B0B0),
-                )
-                Text(
-                    text = diagnostics.line(),
-                    style = MaterialTheme.typography.labelSmall,
-                    fontFamily = FontFamily.Monospace,
-                    color = Color(0xFF909090),
-                )
-            }
+                },
+                modifier = Modifier.align(Alignment.Center),
+            )
         }
 
-        if (controlsVisible) {
-            GlassPanel(
+        if (controlsVisible && state is SessionState.Streaming) {
+            IconButton(
+                onClick = { fullscreen = false },
                 modifier = Modifier
                     .align(Alignment.TopStart)
-                    .padding(top = 4.dp),
+                    .padding(14.dp)
+                    .size(40.dp)
+                    .clip(CircleShape)
+                    .background(Color(0x661C1C1E)),
             ) {
-                IconButton(
-                    onClick = { if (fullscreen) fullscreen = false else onBack() },
-                    modifier = Modifier
-                        .size(38.dp)
-                        .clip(CircleShape)
-                        .background(Color(0x33FFFFFF)),
-                ) {
-                    Icon(
-                        imageVector = if (fullscreen) Icons.Filled.FullscreenExit else Icons.Filled.Close,
-                        contentDescription = if (fullscreen) "退出全屏" else "返回",
-                        tint = Color.White,
-                    )
-                }
+                Icon(
+                    imageVector = Icons.Filled.FullscreenExit,
+                    contentDescription = "退出全屏",
+                    tint = Color.White,
+                )
             }
 
             GlassPanel(
@@ -275,14 +256,16 @@ fun ReceiverScreen(onBack: () -> Unit) {
                         description = "画质",
                         active = expandedRow == ExpandedRow.Quality,
                     ) {
-                        expandedRow = if (expandedRow == ExpandedRow.Quality) ExpandedRow.None else ExpandedRow.Quality
+                        expandedRow =
+                            if (expandedRow == ExpandedRow.Quality) ExpandedRow.None else ExpandedRow.Quality
                     }
                     ControlIcon(
                         icon = Icons.Filled.Speed,
                         description = "帧率",
                         active = expandedRow == ExpandedRow.FrameRate,
                     ) {
-                        expandedRow = if (expandedRow == ExpandedRow.FrameRate) ExpandedRow.None else ExpandedRow.FrameRate
+                        expandedRow =
+                            if (expandedRow == ExpandedRow.FrameRate) ExpandedRow.None else ExpandedRow.FrameRate
                     }
                     ControlIcon(
                         icon = Icons.Filled.AspectRatio,
@@ -293,11 +276,9 @@ fun ReceiverScreen(onBack: () -> Unit) {
                     }
                     ControlIcon(icon = Icons.Filled.CenterFocusStrong, description = "复位") { reset() }
                     Spacer(modifier = Modifier.weight(1f))
-                    Text(
-                        text = "%.1fx".format(zoomState.value),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = Color(0xFFB0B0B0),
-                    )
+                    ControlIcon(icon = Icons.Filled.Close, description = "关闭画面") {
+                        controlsVisible = false
+                    }
                 }
 
                 if (expandedRow == ExpandedRow.Quality) {
@@ -331,7 +312,6 @@ fun ReceiverScreen(onBack: () -> Unit) {
                     }
                 }
 
-                // 一行诊断 + 发送端给的上限（很小、很淡，不抢画面）
                 Text(
                     text = "上限 " +
                         (if (session.remoteBitrateLimitKbps > 0) "${session.remoteBitrateLimitKbps / 1000}Mbps" else "自动") +
@@ -346,6 +326,60 @@ fun ReceiverScreen(onBack: () -> Unit) {
 }
 
 private enum class ExpandedRow { None, Quality, FrameRate }
+
+/** 等待中的中央卡片：连接码 + 下一步 + Wi-Fi 设置。 */
+@Composable
+private fun ConnectionCard(
+    code: String,
+    deviceName: String,
+    statusLine: String,
+    onWifiSettings: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Column(
+        modifier = modifier
+            .padding(26.dp)
+            .clip(RoundedCornerShape(22.dp))
+            .background(Color(0xFF1C1C1E))
+            .border(1.dp, Color(0x1FFFFFFF), RoundedCornerShape(22.dp))
+            .padding(horizontal = 26.dp, vertical = 22.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Icon(
+            imageVector = Icons.Filled.Cast,
+            contentDescription = null,
+            modifier = Modifier.size(34.dp),
+            tint = Color(0xFF0A84FF),
+        )
+        Text(
+            text = "连接码",
+            style = MaterialTheme.typography.labelSmall,
+            color = Color(0xFF8E8E93),
+        )
+        ConnectCodeDisplay(code = ConnectCode.pretty(code), color = Color.White)
+        Text(
+            text = "在发送端点「$deviceName」",
+            style = MaterialTheme.typography.bodySmall,
+            color = Color(0xFFB0B0B0),
+        )
+        Text(
+            text = statusLine,
+            style = MaterialTheme.typography.labelSmall,
+            fontFamily = FontFamily.Monospace,
+            color = Color(0xFF8A8A8A),
+        )
+        IconButton(
+            onClick = onWifiSettings,
+            modifier = Modifier
+                .size(40.dp)
+                .clip(CircleShape)
+                .background(Color(0x22FFFFFF)),
+        ) {
+            Icon(imageVector = Icons.Filled.Wifi, contentDescription = "Wi-Fi 设置", tint = Color.White)
+        }
+    }
+}
 
 /** 控制层图标按钮：圆形、半透明，选中时高亮。 */
 @Composable
@@ -384,7 +418,7 @@ private fun GlassPanel(
     val shape = RoundedCornerShape(20.dp)
     Column(
         modifier = modifier
-            .padding(horizontal = 10.dp, vertical = 8.dp)
+            .padding(horizontal = 10.dp, vertical = 10.dp)
             .clip(shape)
             .background(Color(0xB0121212))
             .border(1.dp, Color(0x22FFFFFF), shape)
