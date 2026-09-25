@@ -5,15 +5,21 @@ plugins {
 }
 
 android {
-    namespace = "com.whalecast.app"
+    namespace = "com.mirror.cast"
     compileSdk = libs.versions.compileSdk.get().toInt()
 
     defaultConfig {
-        applicationId = "com.whalecast.app"
+        applicationId = "com.mirror.cast"
         minSdk = libs.versions.minSdk.get().toInt()
         targetSdk = libs.versions.targetSdk.get().toInt()
         versionCode = 1
-        versionName = "0.1.0-demo"
+        versionName = "0.2.0-webrtc"
+
+        ndk {
+            // 只打两种 ABI：现代手机是 arm64-v8a，较老的设备是 armeabi-v7a。
+            // 媒体栈的原生库很大（arm64 11MB / v7a 6.3MB），剔掉 x86/x86_64 能省一半体积。
+            abiFilters += listOf("arm64-v8a", "armeabi-v7a")
+        }
     }
 
     buildTypes {
@@ -49,12 +55,12 @@ kotlin {
 }
 
 dependencies {
-    implementation(project(":core:protocol"))
-    implementation(project(":core:transport"))
-    implementation(project(":core:media"))
-    implementation(project(":core:media-android"))
-    implementation(project(":core:session"))
     implementation(project(":core:discovery"))
+    implementation(project(":core:signal"))
+
+    // 传输 + 媒体栈：加密、重传、FEC/NACK、拥塞控制、抖动缓冲、音画同步全在这里面。
+    // 这是我们"照抄成熟实现"的核心决策，见 docs/adr/0001。
+    implementation(libs.webrtc.android)
 
     implementation(libs.kotlinx.coroutines.core)
     implementation(libs.androidx.core.ktx)

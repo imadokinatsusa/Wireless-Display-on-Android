@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   jvm-tests:
-    name: JVM 单测（协议 / 传输 / 媒体逻辑）
+    name: JVM 单测（发现 / 信令）
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -28,7 +28,7 @@ jobs:
         with:
           gradle-version: '8.11.1'
       - name: 运行纯 JVM 单元测试
-        run: gradle :core:protocol:test :core:transport:test :core:media:test :core:session:test :core:discovery:test --continue --stacktrace --no-daemon
+        run: gradle :core:discovery:test :core:signal:test --continue --stacktrace --no-daemon
       - name: 上传测试报告
         if: always()
         uses: actions/upload-artifact@v4
@@ -58,18 +58,19 @@ jobs:
       - name: 上传 APK
         uses: actions/upload-artifact@v4
         with:
-          name: whalecast-debug-apk
+          name: mirror-debug-apk
           path: app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
       - name: 发布 APK 到 Release（手机可直接下载）
         if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: demo-build-${{ github.run_number }}
-          name: WhaleCast demo #${{ github.run_number }}
+          tag_name: mirror-build-${{ github.run_number }}
+          name: Mirror build #${{ github.run_number }}
           body: |
             自动构建的 debug APK，可直接安装到 Android 手机（需允许安装未知来源应用）。
 
-            这是切片 01 的环回 demo：同一台设备上，发送端角色把合成画面经协议层切包、走环回通道、在接收端角色重组并渲染。
+            当前阶段：切片 01 骨架就绪 —— 工程已切换为 WebRTC 传输与媒体栈，
+            屏幕采集发布与接收端渲染在后续切片落地（见 .scratch/mirror/issues/）。
           files: app/build/outputs/apk/debug/app-debug.apk
           make_latest: true

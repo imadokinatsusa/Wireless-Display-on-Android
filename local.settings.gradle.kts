@@ -1,10 +1,11 @@
 // 本地验证专用 settings：**只包含纯 JVM 模块**。
 //
 // 因此它不需要 Android SDK，也不需要访问 google() 仓库（国内常连不通），
-// 配上 .toolchain 里的 JDK + Gradle 就能在本机秒级跑测试。
+// 配上 .toolchain 里的 JDK + Gradle 就能在本机跑测试。
 //
-// 用法：
-//   .toolchain\gradle-8.11.1\bin\gradle.bat -c local.settings.gradle.kts :core:discovery:test
+// 注意：路径含中文会让 JDK 解析失败，所以本地验证要先把源码同步到 ASCII 路径
+// （例如 C:\mirror-verify），再在那边执行：
+//   gradle -p C:\mirror-verify -c local.settings.gradle.kts :core:signal:test
 pluginManagement {
     repositories {
         mavenCentral()
@@ -19,10 +20,7 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "WhaleCastLocal"
+rootProject.name = "mirrorLocal"
 
-include(":core:protocol")
-include(":core:transport")
-include(":core:media")
-include(":core:session")
 include(":core:discovery")
+include(":core:signal")

@@ -1,5 +1,5 @@
-// WhaleCast —— Android ↔ Android 局域网双向投屏
-// 模块划分见 CONTEXT.md 与 .scratch/android-cast/spec.md
+// Mirror —— Android ↔ Android 局域网投屏
+// 模块划分见 CONTEXT.md 与 .scratch/mirror/spec.md
 pluginManagement {
     repositories {
         google {
@@ -22,13 +22,8 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "WhaleCast"
+rootProject.name = "mirror"
 
 include(":app")
-include(":core:protocol")
-include(":core:transport")
-include(":core:media")
-include(":core:media-android")
-include(":core:session")
-include(":core:control")
 include(":core:discovery")
+include(":core:signal")
