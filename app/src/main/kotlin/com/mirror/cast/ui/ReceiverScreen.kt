@@ -228,14 +228,32 @@ fun ReceiverContent(onFullscreenChange: (Boolean) -> Unit = {}) {
         p2p.start()
         session.prepare()
         session.start(scope)
-        // ⚠️ 这里**刻意不建 Wi-Fi Direct 组**。
-        //
-        // 现在只剩扫码一条路，而扫码**根本不需要 P2P**（同一 Wi-Fi 下直接连 IP 就行）。
-        // 自动建组的坏处却是实打实的：它抢 Wi-Fi 射频；而且 P2P 组是**系统级、跨进程**
-        // 的 —— App 被强杀时来不及拆，残留的组会让**别的用 P2P 的功能**一直用不了
-        // （实测是「一加互传」），只有重启手机才恢复。
-        //
-        // 想用 Wi-Fi Direct 时，卡片下面有「建组」按钮，由用户自己决定。
+    }
+
+    /**
+     * 按网络状况决定走哪条路 —— 两条是**互补**的：
+     *
+     * - **有局域网地址**（连着 Wi-Fi 或热点）：直接用那个地址，**不建组** ——
+     *   更快，也不占射频；
+     * - **一个地址都没有**（两台设备什么都没连）：**自动建 Wi-Fi Direct 组**。
+     *   这是"不连 Wi-Fi 也能投屏"的**唯一**办法 —— 系统会在两端之间拉一条专属链路，
+     *   本机成为群主、地址固定 `192.168.49.1`，二维码会自动换成它并带上 `p2p=1` 标记。
+     *
+     * 之所以跟着 `localIp` 变：主人可能先开着 Wi-Fi 扫了码，中途 Wi-Fi 断了，
+     * 这时得能自动切到 Wi-Fi Direct 上去。
+     */
+    LaunchedEffect(localIp, p2pGranted) {
+        if (localIp == null) {
+            if (p2pGranted) {
+                p2p.start()
+                p2p.createGroup()
+            } else {
+                p2pPermissionLauncher.launch(p2pPermission)
+            }
+        } else if (p2pStatus.groupOwnerAddress != null) {
+            // 又有局域网了就不需要 P2P 组，把它还回去（别占着「一加互传」要用的射频）
+            p2p.stop()
+        }
     }
 
     // 断开之后：清掉渲染器里的最后一帧，并**立刻拆掉 Wi-Fi Direct 组**。
