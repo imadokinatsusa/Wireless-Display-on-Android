@@ -28,9 +28,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.dp
 
-/** 两个角色就是两个页签：发送 / 接收。 */
+/** 两个角色就是两个页签：投屏 / 接收。 */
 private enum class MirrorTab(val label: String, val icon: ImageVector) {
-    Sender("发送", Icons.Filled.ScreenShare),
+    Sender("投屏", Icons.Filled.ScreenShare),
     Receiver("接收", Icons.Filled.Tv),
 }
 

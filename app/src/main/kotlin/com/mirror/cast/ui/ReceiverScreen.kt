@@ -26,12 +26,12 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Cast
+import androidx.compose.material.icons.filled.CompareArrows
 import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.FullscreenExit
 import androidx.compose.material.icons.filled.HighQuality
 import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Wifi
-import androidx.compose.material.icons.filled.WifiTethering
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -66,7 +66,6 @@ import androidx.core.content.ContextCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import com.mirror.cast.Broadcaster
-import com.mirror.cast.HotspotController
 import com.mirror.cast.CaptureSpec
 import com.mirror.cast.LocalAddress
 import com.mirror.cast.MirrorApplication
@@ -128,21 +127,7 @@ fun ReceiverContent(onFullscreenChange: (Boolean) -> Unit = {}) {
     }
 
     /**
-     * 热点由**接收端**开 —— 这条分工是刻意的，和 AirDroid 的规则一致：
-     * **开热点的那台必须是接收端，不能是投屏端。**
-     *
-     * 道理在角色：接收端本来就只需要"守在那里"，开热点对它只是多绑一个接口；
-     * 而发送端是最需要往外发数据的一方，让它同时扮演网关，路由与网络候选最容易出岔子。
-     * 接收端开热点后地址固定是 `192.168.43.1` 这类 softap 地址，而 [LocalAddress]
-     * 当初特意绕过 ConnectivityManager 去枚举 NetworkInterface，正是为了拿到它 ——
-     * 二维码会自动跟着变成这个地址。
-     */
-    val hotspot = remember(context) { HotspotController(context) }
-    var hotspotInfo by remember { mutableStateOf<HotspotController.HotspotInfo?>(null) }
-    var hotspotError by remember { mutableStateOf<String?>(null) }
-
-    /**
-     * Wi-Fi Direct 链路 —— **离线直连的首选**。
+     * Wi-Fi Direct 链路 —— 离线直连靠它。
      *
      * 建组成功后本机就是群主，地址固定 `192.168.49.1`。这时二维码会改用它，
      * 并带上 `p2p=1` 标记，让发送端知道"先建链路、再连地址"。
@@ -293,7 +278,6 @@ fun ReceiverContent(onFullscreenChange: (Boolean) -> Unit = {}) {
             broadcaster.stop()
             responder.stop()
             p2p.stop()
-            hotspot.stop()
             session.detachRenderer()
             renderer?.let { view -> runCatching { view.release() } }
             renderer = null
@@ -358,25 +342,17 @@ fun ReceiverContent(onFullscreenChange: (Boolean) -> Unit = {}) {
                                 ?: "应答端口 ${responder.port}"
                             ) +
                         " · " + diagnostics.line(),
-                    hotspotActive = hotspot.running,
-                    hotspotDetail = hotspotError
-                        ?: hotspotInfo?.let { "${it.displayName} / 密码 ${it.password}" },
                     p2pActive = p2pStatus.groupOwnerAddress != null,
                     p2pDetail = p2pStatus.message,
-                    onHotspot = {
-                        if (hotspot.running) {
-                            hotspot.stop()
-                            hotspotInfo = null
-                            hotspotError = null
+                    onCreateGroup = {
+                        if (p2pStatus.groupOwnerAddress != null) {
+                            p2p.stop()
+                        } else if (p2pGranted) {
+                            p2p.start()
+                            p2p.createGroup()
                         } else {
-                            hotspot.start { info, error ->
-                                hotspotInfo = info
-                                hotspotError = error
-                            }
+                            p2pPermissionLauncher.launch(p2pPermission)
                         }
-                        // 开/关热点会换掉网络接口：广播必须重新绑定，否则发送端收不到
-                        broadcaster.stop()
-                        broadcaster.start()
                     },
                     onWifiSettings = {
                         runCatching {
@@ -414,7 +390,7 @@ fun ReceiverContent(onFullscreenChange: (Boolean) -> Unit = {}) {
                     .fillMaxSize()
                     .padding(horizontal = 6.dp),
             ) {
-                MirrorTopBar(title = "接收显示")
+                MirrorTopBar(title = "接收")
 
                 if (state !is SessionState.Streaming) {
                     Text(
@@ -555,11 +531,9 @@ private fun ConnectionCard(
     deviceName: String,
     qr: ImageBitmap?,
     statusLine: String,
-    hotspotActive: Boolean,
-    hotspotDetail: String?,
     p2pActive: Boolean,
     p2pDetail: String?,
-    onHotspot: () -> Unit,
+    onCreateGroup: () -> Unit,
     onWifiSettings: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -616,29 +590,30 @@ private fun ConnectionCard(
             ) {
                 Icon(imageVector = Icons.Filled.Wifi, contentDescription = "Wi-Fi 设置", tint = Color.White)
             }
-            // Wi-Fi Direct 是**默认连法**，进来就自动建组了，所以这里没有它的按钮
+            // Wi-Fi Direct 建组：不用路由器、不用热点、不用流量 ——
+            // 系统直接在两端之间拉一条专属链路，离线和同一 Wi-Fi 下都能用
             IconButton(
-                onClick = onHotspot,
+                onClick = onCreateGroup,
                 modifier = Modifier
                     .size(40.dp)
                     .clip(CircleShape)
-                    .background(if (hotspotActive) Color(0x5530D158) else Color(0x22FFFFFF)),
+                    .background(if (p2pActive) Color(0x5530D158) else Color(0x22FFFFFF)),
             ) {
                 Icon(
-                    imageVector = Icons.Filled.WifiTethering,
-                    contentDescription = "开热点给发送端连",
-                    tint = if (hotspotActive) Color(0xFF30D158) else Color.White,
+                    imageVector = Icons.Filled.CompareArrows,
+                    contentDescription = "Wi-Fi 直连建组",
+                    tint = if (p2pActive) Color(0xFF30D158) else Color.White,
                 )
             }
         }
         // 状态行：就绪了是绿的，其余用灰 —— 内容本身已经说明发生了什么
-        val detail = p2pDetail ?: hotspotDetail
+        val detail = p2pDetail
         if (detail != null) {
             Text(
                 text = detail,
                 style = MaterialTheme.typography.labelSmall,
                 fontFamily = FontFamily.Monospace,
-                color = if (p2pActive || hotspotActive) Color(0xFF30D158) else Color(0xFF8A8A8A),
+                color = if (p2pActive) Color(0xFF30D158) else Color(0xFF8A8A8A),
             )
         }
     }

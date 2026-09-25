@@ -274,7 +274,7 @@ fun SenderContent(lastCrash: String? = null) {
             .fillMaxSize()
             .padding(horizontal = 16.dp),
     ) {
-        MirrorTopBar(title = "发送屏幕")
+        MirrorTopBar(title = "投屏")
         Column(
             modifier = Modifier
                 .fillMaxSize()
