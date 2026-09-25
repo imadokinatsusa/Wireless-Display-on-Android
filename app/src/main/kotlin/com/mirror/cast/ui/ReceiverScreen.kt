@@ -61,6 +61,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
@@ -374,6 +375,7 @@ fun ReceiverContent(onFullscreenChange: (Boolean) -> Unit = {}) {
                     code = code,
                     deviceName = deviceName,
                     qr = qrImage,
+                    preparingHint = p2pStatus.message,
                     statusLine = diagnostics.line(),
                     hotspotActive = hotspot.running,
                     hotspotDetail = hotspotError
@@ -572,6 +574,8 @@ private fun ConnectionCard(
     code: String,
     deviceName: String,
     qr: ImageBitmap?,
+    /** 没有二维码时显示的原因 —— 建组中、建组失败、还是别的，都要让主人看见。 */
+    preparingHint: String?,
     statusLine: String,
     hotspotActive: Boolean,
     hotspotDetail: String?,
@@ -612,12 +616,23 @@ private fun ConnectionCard(
                     .clip(RoundedCornerShape(8.dp))
                     .background(Color.White),
             )
+            Text(
+                text = "或在发送端点「$deviceName」",
+                style = MaterialTheme.typography.bodySmall,
+                color = Color(0xFFB0B0B0),
+            )
+        } else {
+            // 还没有可用的地址（比如关了 Wi-Fi、Wi-Fi Direct 组还没建好）。
+            // 这时候**最忌讳留一片空白** —— 主人会以为程序坏了。
+            // 必须写清"现在在做什么"或者"为什么没成"。
+            Text(
+                text = preparingHint ?: "正在准备连接…",
+                modifier = Modifier.padding(vertical = 12.dp),
+                style = MaterialTheme.typography.bodyMedium,
+                color = Color(0xFFFF9F0A),
+                textAlign = TextAlign.Center,
+            )
         }
-        Text(
-            text = "或在发送端点「$deviceName」",
-            style = MaterialTheme.typography.bodySmall,
-            color = Color(0xFFB0B0B0),
-        )
         Text(
             text = statusLine,
             style = MaterialTheme.typography.labelSmall,
