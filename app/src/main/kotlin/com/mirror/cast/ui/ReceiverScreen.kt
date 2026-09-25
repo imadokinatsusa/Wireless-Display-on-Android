@@ -281,14 +281,19 @@ fun ReceiverContent(onFullscreenChange: (Boolean) -> Unit = {}) {
         }
     }
 
-    // 断开之后：清掉渲染器里的最后一帧，并**立刻拆掉 Wi-Fi Direct 组**。
+    // 断开之后：清掉渲染器里的最后一帧；**如果这一轮确实投过屏，顺手把组拆掉**。
     //
-    // 拆组要抢在"App 退出"之前 —— 它占着 Wi-Fi 射频，还会挡住别的用 P2P 的功能
-    // （实测是「一加互传」）。所以只要不在投屏状态，就马上把它还回去。
-    LaunchedEffect(state, p2pStatus.groupOwnerAddress) {
-        if (state !is SessionState.Streaming) {
+    // ⚠️ 判据必须是"**投过屏之后又断开**"，绝不能写成"只要不在投屏就拆" ——
+    // 那样刚建好的组会在生成二维码的同一瞬间被自己拆掉，
+    // 表现就是**二维码闪一下就不见了**（踩过）。"从来没投过"不等于"断开"。
+    var wasStreaming by remember { mutableStateOf(false) }
+    LaunchedEffect(state) {
+        if (state is SessionState.Streaming) {
+            wasStreaming = true
+        } else {
             renderer?.clearImage()
-            if (p2pStatus.groupOwnerAddress != null) {
+            if (wasStreaming) {
+                wasStreaming = false
                 p2p.stop()
             }
         }
