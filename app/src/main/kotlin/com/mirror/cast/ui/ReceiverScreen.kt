@@ -22,6 +22,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Cast
 import androidx.compose.material.icons.filled.CenterFocusStrong
+import androidx.compose.material.icons.filled.CompareArrows
 import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.FullscreenExit
 import androidx.compose.material.icons.filled.HighQuality
@@ -70,6 +71,7 @@ import com.mirror.cast.SessionState
 import com.mirror.cast.discovery.CastLink
 import com.mirror.cast.discovery.CastTarget
 import com.mirror.cast.discovery.ConnectCode
+import com.mirror.cast.p2p.WifiP2pLink
 import com.mirror.cast.qr.QrCode
 import com.mirror.cast.web.ReceiverSession
 import kotlinx.coroutines.launch
@@ -121,6 +123,15 @@ fun ReceiverContent(onFullscreenChange: (Boolean) -> Unit = {}) {
     var hotspotInfo by remember { mutableStateOf<HotspotController.HotspotInfo?>(null) }
     var hotspotError by remember { mutableStateOf<String?>(null) }
 
+    /**
+     * Wi-Fi Direct 链路 —— **离线直连的首选**。
+     *
+     * 建组成功后本机就是群主，地址固定 `192.168.49.1`。这时二维码会改用它，
+     * 并带上 `p2p=1` 标记，让发送端知道"先建链路、再连地址"。
+     */
+    val p2p = remember(context) { WifiP2pLink(context) }
+    val p2pStatus by p2p.status.collectAsState()
+
     // 二维码里的地址必须跟着网络走：换 Wi-Fi / 连上热点后 IP 就变了，
     // 不刷新的话对方扫到的是一个连不上的旧地址
     var localIp by remember { mutableStateOf(LocalAddress.ipv4()) }
@@ -153,15 +164,35 @@ fun ReceiverContent(onFullscreenChange: (Boolean) -> Unit = {}) {
     // 对方扫一下就能直连，完全不依赖广播能否穿过路由器
     val density = LocalDensity.current
     val qrPixels = remember(density) { with(density) { QR_SIZE_DP.roundToPx() } }
-    val castLink = remember(localIp, code, state, session.signalingPort) {
-        val host = localIp
+    // 注意：remember 最多 4 个 key，所以这里不能把 state 也塞进去 ——
+    // 端口就绪本身会通过 diagnostics 触发重组，不需要它当 key
+    val castLink = remember(
+        localIp,
+        code,
+        session.signalingPort,
+        p2pStatus.groupOwnerAddress,
+    ) {
         val port = session.signalingPort
-        if (host == null || port <= 0) null else CastLink.encode(CastTarget(host, port, code, deviceName))
+        if (port <= 0) {
+            null
+        } else {
+            // 建了 Wi-Fi Direct 组就优先用它：那个地址不依赖任何已有网络
+            val groupOwner = p2pStatus.groupOwnerAddress
+            val host = groupOwner ?: localIp
+            if (host == null) {
+                null
+            } else {
+                CastLink.encode(
+                    CastTarget(host, port, code, deviceName, viaWifiDirect = groupOwner != null),
+                )
+            }
+        }
     }
     val qrImage = remember(castLink, qrPixels) { castLink?.let { QrCode.bitmap(it, qrPixels) } }
 
     LaunchedEffect(session) {
         networkWatcher.start()
+        p2p.start()
         session.prepare()
         broadcaster.start()
         session.start(scope)
@@ -189,6 +220,7 @@ fun ReceiverContent(onFullscreenChange: (Boolean) -> Unit = {}) {
         onDispose {
             networkWatcher.stop()
             broadcaster.stop()
+            p2p.stop()
             hotspot.stop()
             session.detachRenderer()
             renderer?.let { view -> runCatching { view.release() } }
@@ -252,6 +284,16 @@ fun ReceiverContent(onFullscreenChange: (Boolean) -> Unit = {}) {
                     hotspotActive = hotspot.running,
                     hotspotDetail = hotspotError
                         ?: hotspotInfo?.let { "${it.displayName} / 密码 ${it.password}" },
+                    p2pActive = p2pStatus.groupOwnerAddress != null,
+                    p2pDetail = p2pStatus.message,
+                    onWifiDirect = {
+                        if (p2pStatus.groupOwnerAddress != null) {
+                            p2p.stop()
+                        } else {
+                            p2p.start()
+                            p2p.createGroup()
+                        }
+                    },
                     onHotspot = {
                         if (hotspot.running) {
                             hotspot.stop()
@@ -450,6 +492,9 @@ private fun ConnectionCard(
     statusLine: String,
     hotspotActive: Boolean,
     hotspotDetail: String?,
+    p2pActive: Boolean,
+    p2pDetail: String?,
+    onWifiDirect: () -> Unit,
     onHotspot: () -> Unit,
     onWifiSettings: () -> Unit,
     modifier: Modifier = Modifier,
@@ -507,6 +552,20 @@ private fun ConnectionCard(
             ) {
                 Icon(imageVector = Icons.Filled.Wifi, contentDescription = "Wi-Fi 设置", tint = Color.White)
             }
+            // Wi-Fi 直连：不用路由器、不用热点、不用流量 —— 系统在两端之间拉一条专属链路
+            IconButton(
+                onClick = onWifiDirect,
+                modifier = Modifier
+                    .size(40.dp)
+                    .clip(CircleShape)
+                    .background(if (p2pActive) Color(0x5530D158) else Color(0x22FFFFFF)),
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.CompareArrows,
+                    contentDescription = "Wi-Fi 直连（离线也能用）",
+                    tint = if (p2pActive) Color(0xFF30D158) else Color.White,
+                )
+            }
             IconButton(
                 onClick = onHotspot,
                 modifier = Modifier
@@ -521,12 +580,14 @@ private fun ConnectionCard(
                 )
             }
         }
-        if (hotspotDetail != null) {
+        // 状态行：就绪了是绿的，其余用灰 —— 内容本身已经说明发生了什么
+        val detail = p2pDetail ?: hotspotDetail
+        if (detail != null) {
             Text(
-                text = hotspotDetail,
+                text = detail,
                 style = MaterialTheme.typography.labelSmall,
                 fontFamily = FontFamily.Monospace,
-                color = if (hotspotActive) Color(0xFF30D158) else Color(0xFFFF9F0A),
+                color = if (p2pActive || hotspotActive) Color(0xFF30D158) else Color(0xFF8A8A8A),
             )
         }
     }

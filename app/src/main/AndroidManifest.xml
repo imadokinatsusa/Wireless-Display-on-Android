@@ -4,11 +4,12 @@
     <!-- 局域网直连：WebRTC 媒体 + 临时 TCP 信令 -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
-    <!-- 发送端热点（LocalOnlyHotspot）：不共享外网的本地热点，专供投屏 -->
+    <!-- 热点（LocalOnlyHotspot）与 Wi-Fi Direct 都要读写 Wi-Fi 状态 -->
     <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" android:maxSdkVersion="32" />
     <uses-permission
-        android:name="android.permission.NEAREST_WIFI_DEVICES"
+        android:name="android.permission.NEARBY_WIFI_DEVICES"
         android:usesPermissionFlags="neverForLocation" />
 
     <!-- 局域网广播发现：Wi-Fi 芯片默认过滤广播/组播，必须持 MulticastLock -->

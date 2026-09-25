@@ -58,4 +58,29 @@ class CastLinkTest {
         val decoded = CastLink.decode("mirror://10.0.0.2:9999?code=ABC234")
         assertEquals("10.0.0.2", decoded?.deviceName)
     }
+
+    @Test
+    fun wifiDirectFlagRoundTrips() {
+        val target = CastTarget(
+            host = "192.168.49.1",
+            port = 47_800,
+            code = "ABC234",
+            deviceName = "Pixel",
+            viaWifiDirect = true,
+        )
+        assertEquals(target, CastLink.decode(CastLink.encode(target)))
+    }
+
+    @Test
+    fun absentWifiDirectFlagDefaultsToPlainNetwork() {
+        // 局域网那套二维码不带 p2p 标记，解析出来必须是"普通网络"，不能被误当成离线场景
+        val decoded = CastLink.decode("mirror://192.168.43.5:47800?code=ABC234")
+        assertEquals(false, decoded?.viaWifiDirect)
+    }
+
+    @Test
+    fun bogusWifiDirectValueIsTreatedAsPlainNetwork() {
+        val decoded = CastLink.decode("mirror://192.168.43.5:47800?code=ABC234&p2p=yes")
+        assertEquals(false, decoded?.viaWifiDirect)
+    }
 }

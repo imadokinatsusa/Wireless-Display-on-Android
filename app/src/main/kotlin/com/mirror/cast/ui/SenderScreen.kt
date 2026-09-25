@@ -51,6 +51,7 @@ import com.mirror.cast.FailedSession
 import com.mirror.cast.LocalAddress
 import com.mirror.cast.NetworkWatcher
 import com.mirror.cast.MirrorService
+import com.mirror.cast.p2p.WifiP2pLink
 import com.mirror.cast.QualityAdjustable
 import com.mirror.cast.SessionRegistry
 import com.mirror.cast.discovery.CastLink
@@ -83,6 +84,19 @@ fun SenderContent(lastCrash: String? = null) {
                 PackageManager.PERMISSION_GRANTED,
         )
     }
+
+    /** 一次待发起的投屏：弹录屏授权这件事统一在这里做，免得各处重复同一段流程。 */
+    var pendingDirect by remember { mutableStateOf<CastRequest?>(null) }
+
+    /**
+     * 离线场景用的 Wi-Fi Direct 链路。
+     *
+     * 扫到带 `p2p=1` 的二维码时，先让系统在两端之间拉一条链路，
+     * 拿到群主地址（`192.168.49.1`）之后再照常投屏 —— 上层流程一步都不用改。
+     */
+    val p2p = remember(context) { WifiP2pLink(context) }
+    val p2pStatus by p2p.status.collectAsState()
+    var pendingP2p by remember { mutableStateOf<CastRequest?>(null) }
     var bitrateTier by remember { mutableStateOf(CaptureSpec.DEFAULT_BITRATE_TIER) }
     var autoQuality by remember { mutableStateOf(true) }
     var showBitrate by remember { mutableStateOf(false) }
@@ -160,9 +174,51 @@ fun SenderContent(lastCrash: String? = null) {
             return@rememberLauncherForActivityResult
         }
         scanHint = null
-        pending = CastRequest(target.host, target.port, target.code, target.deviceName)
+        val request = CastRequest(
+            host = target.host,
+            port = target.port,
+            code = target.code,
+            deviceName = target.deviceName,
+            viaWifiDirect = target.viaWifiDirect,
+        )
+        if (request.viaWifiDirect) {
+            // 离线：先建链路，地址等链路好了再定
+            pendingP2p = request
+            p2p.start()
+            p2p.discover()
+        } else {
+            pendingDirect = request
+        }
+    }
+
+    /**
+     * 统一弹录屏授权。
+     *
+     * 走 LaunchedEffect 而不是直接调用：要让"扫码"和"点设备"两条路径共用同一入口，
+     * 而它们谁都无法在定义顺序上先于 launcher。
+     */
+    LaunchedEffect(pendingDirect) {
+        val target = pendingDirect ?: return@LaunchedEffect
+        pending = target
         val manager = context.getSystemService(MediaProjectionManager::class.java)
         projectionLauncher.launch(manager.createScreenCaptureIntent())
+        pendingDirect = null
+    }
+
+    // 搜到设备就自动加入对方的组（二维码里带着对方名字）
+    LaunchedEffect(p2pStatus.peers, pendingP2p) {
+        val target = pendingP2p ?: return@LaunchedEffect
+        if (p2pStatus.groupOwnerAddress == null && p2pStatus.peers.isNotEmpty()) {
+            p2p.connect(target.deviceName)
+        }
+    }
+
+    // 链路建好 → 换成群主地址，照常走投屏流程
+    LaunchedEffect(p2pStatus.groupOwnerAddress, pendingP2p) {
+        val target = pendingP2p ?: return@LaunchedEffect
+        val address = p2pStatus.groupOwnerAddress ?: return@LaunchedEffect
+        pendingP2p = null
+        pendingDirect = target.copy(host = address, viaWifiDirect = false)
     }
 
     // 相机权限是异步的：拿到之后才由这里真正拉起扫码界面
@@ -188,6 +244,7 @@ fun SenderContent(lastCrash: String? = null) {
         onDispose {
             networkWatcher.stop()
             discovery.stop()
+            p2p.stop()
         }
     }
 
@@ -253,7 +310,9 @@ fun SenderContent(lastCrash: String? = null) {
                     icon = Icons.Filled.QrCodeScanner,
                     iconTint = IconTints.blue,
                     title = "扫码直连",
-                    subtitle = scanHint ?: "扫接收端屏幕上的二维码，不必等搜索",
+                    subtitle = p2pStatus.message
+                        ?: scanHint
+                        ?: "扫接收端屏幕上的二维码，不必等搜索",
                     onClick = {
                         scanHint = null
                         if (cameraGranted) {
@@ -285,14 +344,12 @@ fun SenderContent(lastCrash: String? = null) {
                             subtitle = ConnectCode.pretty(device.beacon.code),
                             showDivider = index < found.lastIndex,
                             onClick = {
-                                pending = CastRequest(
+                                pendingDirect = CastRequest(
                                     host = device.host,
                                     port = device.beacon.tcpPort,
                                     code = device.beacon.code,
                                     deviceName = device.beacon.deviceName,
                                 )
-                                val manager = context.getSystemService(MediaProjectionManager::class.java)
-                                projectionLauncher.launch(manager.createScreenCaptureIntent())
                             },
                         )
                     }
@@ -377,6 +434,8 @@ private data class CastRequest(
     val port: Int,
     val code: String,
     val deviceName: String,
+    /** 这个地址要靠 Wi-Fi Direct 才通（离线场景）。 */
+    val viaWifiDirect: Boolean = false,
 )
 
 private val ColorGray = androidx.compose.ui.graphics.Color(0xFF8E8E93)

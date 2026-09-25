@@ -6,6 +6,13 @@ data class CastTarget(
     val port: Int,
     val code: String,
     val deviceName: String,
+    /**
+     * 这个地址要靠 **Wi-Fi Direct** 才通（离线场景：两台设备都没连任何网络）。
+     *
+     * 为 true 时，发送端必须先通过 Wi-Fi Direct 加入对方的组，
+     * 拿到群主地址（`192.168.49.1`）之后才谈得上连接。
+     */
+    val viaWifiDirect: Boolean = false,
 )
 
 /**
@@ -27,10 +34,14 @@ object CastLink {
 
     private const val NAME_KEY = "name"
 
-    fun encode(target: CastTarget): String =
-        "$SCHEME://${target.host}:${target.port}" +
-            "?$CODE_KEY=${ConnectCode.normalize(target.code)}" +
-            "&$NAME_KEY=${encodeComponent(target.deviceName)}"
+    private const val P2P_KEY = "p2p"
+
+    fun encode(target: CastTarget): String = buildString {
+        append("$SCHEME://${target.host}:${target.port}")
+        append("?$CODE_KEY=${ConnectCode.normalize(target.code)}")
+        append("&$NAME_KEY=${encodeComponent(target.deviceName)}")
+        if (target.viaWifiDirect) append("&$P2P_KEY=1")
+    }
 
     /**
      * 解析扫码结果。
@@ -56,6 +67,7 @@ object CastLink {
 
         var code = ""
         var name = ""
+        var viaWifiDirect = false
         query.split('&').forEach { pair ->
             val equals = pair.indexOf('=')
             if (equals <= 0) return@forEach
@@ -64,6 +76,7 @@ object CastLink {
             when (key) {
                 CODE_KEY -> code = ConnectCode.normalize(value)
                 NAME_KEY -> name = value
+                P2P_KEY -> viaWifiDirect = value == "1"
             }
         }
 
@@ -73,6 +86,7 @@ object CastLink {
             port = port,
             code = code,
             deviceName = name.ifBlank { host },
+            viaWifiDirect = viaWifiDirect,
         )
     }
 
