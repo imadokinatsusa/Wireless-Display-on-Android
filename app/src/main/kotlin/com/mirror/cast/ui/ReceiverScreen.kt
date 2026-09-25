@@ -228,12 +228,14 @@ fun ReceiverContent(onFullscreenChange: (Boolean) -> Unit = {}) {
         p2p.start()
         session.prepare()
         session.start(scope)
-        // 进这一页就把 Wi-Fi Direct 组建起来 —— 这是默认连法，不等按钮、不等用户操作
-        if (p2pGranted) {
-            p2p.createGroup()
-        } else {
-            p2pPermissionLauncher.launch(p2pPermission)
-        }
+        // ⚠️ 这里**刻意不建 Wi-Fi Direct 组**。
+        //
+        // 现在只剩扫码一条路，而扫码**根本不需要 P2P**（同一 Wi-Fi 下直接连 IP 就行）。
+        // 自动建组的坏处却是实打实的：它抢 Wi-Fi 射频；而且 P2P 组是**系统级、跨进程**
+        // 的 —— App 被强杀时来不及拆，残留的组会让**别的用 P2P 的功能**一直用不了
+        // （实测是「一加互传」），只有重启手机才恢复。
+        //
+        // 想用 Wi-Fi Direct 时，卡片下面有「建组」按钮，由用户自己决定。
     }
 
     // 断开之后清掉渲染器里的最后一帧：否则画面停在最后一帧，
