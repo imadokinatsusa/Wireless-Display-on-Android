@@ -62,6 +62,7 @@ class MirrorService : Service() {
         val width = intent.getIntExtra(EXTRA_WIDTH, 0)
         val height = intent.getIntExtra(EXTRA_HEIGHT, 0)
         val dpi = intent.getIntExtra(EXTRA_DPI, 0)
+        val maxLongEdge = intent.getIntExtra(EXTRA_MAX_LONG_EDGE, CaptureSpec.DEFAULT_QUALITY.maxLongEdge)
 
         if (projectionData == null || host == null || port <= 0 || code == null || width <= 0 || height <= 0) {
             reportFailure("启动参数不完整（授权结果 / 对端地址 / 分辨率）")
@@ -104,6 +105,7 @@ class MirrorService : Service() {
                 host = host,
                 signalingPort = port,
                 code = code,
+                initialQuality = CaptureSpec.qualityOf(maxLongEdge),
             )
             session = created
             SessionRegistry.set(created)
@@ -189,6 +191,7 @@ class MirrorService : Service() {
         private const val EXTRA_WIDTH = "width"
         private const val EXTRA_HEIGHT = "height"
         private const val EXTRA_DPI = "dpi"
+        private const val EXTRA_MAX_LONG_EDGE = "max_long_edge"
 
         /** 启动投屏：界面把屏幕授权结果与对端地址交给服务，其余全在服务里发生。 */
         fun start(
@@ -199,6 +202,7 @@ class MirrorService : Service() {
             signalingPort: Int,
             code: String,
             spec: CaptureSpec.Spec,
+            maxLongEdge: Int,
         ) {
             val intent = Intent(context, MirrorService::class.java).apply {
                 putExtra(EXTRA_RESULT_CODE, resultCode)
@@ -209,6 +213,7 @@ class MirrorService : Service() {
                 putExtra(EXTRA_WIDTH, spec.width)
                 putExtra(EXTRA_HEIGHT, spec.height)
                 putExtra(EXTRA_DPI, spec.densityDpi)
+                putExtra(EXTRA_MAX_LONG_EDGE, maxLongEdge)
             }
             ContextCompat.startForegroundService(context, intent)
         }

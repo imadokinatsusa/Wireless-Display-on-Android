@@ -5,6 +5,7 @@ import android.media.projection.MediaProjection
 import com.mirror.cast.CaptureSpec
 import com.mirror.cast.CastSession
 import com.mirror.cast.Diagnostics
+import com.mirror.cast.ResolutionAdjustable
 import com.mirror.cast.SessionState
 import com.mirror.cast.signal.SignalingClient
 import com.mirror.cast.signal.SignalingMessage
@@ -25,6 +26,7 @@ import org.webrtc.IceCandidate
 import org.webrtc.MediaConstraints
 import org.webrtc.PeerConnection
 import org.webrtc.RtpParameters
+import org.webrtc.RtpSender
 import org.webrtc.SessionDescription
 import org.webrtc.SurfaceTextureHelper
 import org.webrtc.VideoSource
@@ -46,7 +48,8 @@ class SenderSession(
     private val host: String,
     private val signalingPort: Int,
     private val code: String,
-) : CastSession {
+    initialQuality: CaptureSpec.Quality = CaptureSpec.DEFAULT_QUALITY,
+) : CastSession, ResolutionAdjustable {
 
     private val _state = MutableStateFlow<SessionState>(SessionState.Connecting("$host:$signalingPort"))
     override val state: StateFlow<SessionState> = _state.asStateFlow()
@@ -71,6 +74,10 @@ class SenderSession(
     private var audioTrack: AudioTrack? = null
     private var capturer: ProjectionVideoCapturer? = null
     private var playback: PlaybackAudioCapturer? = null
+    private var videoSender: RtpSender? = null
+
+    @Volatile
+    private var qualityValue: CaptureSpec.Quality = initialQuality
 
     fun start(scope: CoroutineScope) {
         if (pumpJob != null) return
@@ -89,6 +96,9 @@ class SenderSession(
 
     private suspend fun runSession() {
         runtime.ensureStarted()
+
+        // 编码尺寸由画质档位决定（采集尺寸仍是屏幕真实尺寸，见 CaptureSpec）
+        val (encodeWidth, encodeHeight) = CaptureSpec.encodeSize(spec.width, spec.height, qualityValue.maxLongEdge)
 
         // ── 1) 信令 ────────────────────────────────────────────────────────────
         val signaling = SignalingClient(code).connect(host, signalingPort).getOrElse { error ->
@@ -149,17 +159,18 @@ class SenderSession(
             }
             val created = factory.createPeerConnection(config, observer)
                 ?: error("创建 PeerConnection 失败")
-            val videoSender = created.addTrack(newVideoTrack, listOf(STREAM_ID))
+            videoSender = created.addTrack(newVideoTrack, listOf(STREAM_ID))
             created.addTrack(newAudioTrack, listOf(STREAM_ID))
             // 保帧率优先：屏幕内容宁可分辨率降一点，也不要卡顿
             runCatching {
-                val params = videoSender.parameters
+                val sender = videoSender ?: return@runCatching
+                val params = sender.parameters
                 params.degradationPreference = RtpParameters.DegradationPreference.MAINTAIN_FRAMERATE
                 params.encodings.forEach { encoding ->
-                    encoding.maxBitrateBps = spec.bitRate
+                    encoding.maxBitrateBps = CaptureSpec.bitRateFor(encodeWidth, encodeHeight)
                     encoding.maxFramerate = CaptureSpec.FRAME_RATE
                 }
-                videoSender.setParameters(params)
+                sender.setParameters(params)
             }
 
             videoSource = newVideoSource
@@ -171,7 +182,7 @@ class SenderSession(
         peerConnection = connection
 
         // ── 4) 采集（虚拟屏尺寸 = 屏幕真实尺寸） ───────────────────────────────
-        startCapture()
+        startCapture(encodeWidth, encodeHeight)
 
         // ── 5) 发出 offer ─────────────────────────────────────────────────────
         val offer = runtime.onSignaling { connection.awaitOffer() }
@@ -211,9 +222,8 @@ class SenderSession(
         }
     }
 
-    private suspend fun startCapture() {
+    private suspend fun startCapture(encodeWidth: Int, encodeHeight: Int) {
         val source = videoSource ?: error("视频源尚未就绪")
-        val (encodeWidth, encodeHeight) = CaptureSpec.encodeSize(spec.width, spec.height)
         val created = ProjectionVideoCapturer(projection, spec.densityDpi)
         val textureHelper = SurfaceTextureHelper.create("mirror-capture", runtime.eglContext)
         runtime.onSignaling {
@@ -234,6 +244,49 @@ class SenderSession(
                 }
                 previous = current
             }
+        }
+    }
+
+    override val quality: CaptureSpec.Quality get() = qualityValue
+
+    /**
+     * 换一档画质：只动**编码输出**，不动采集（虚拟屏尺寸必须与屏幕一致）。
+     * 投屏过程中可以随时切 —— 卡了就降一档，这是最直接的救急手段。
+     */
+    override suspend fun setQuality(quality: CaptureSpec.Quality): Boolean {
+        qualityValue = quality
+        val source = videoSource ?: return false
+        val (width, height) = CaptureSpec.encodeSize(spec.width, spec.height, quality.maxLongEdge)
+        runtime.onSignaling { source.adaptOutputFormat(width, height, CaptureSpec.FRAME_RATE) }
+        applyBitrate(width, height)
+        reportResolution(width, height)
+        return true
+    }
+
+    /** 码率按**编码尺寸**算，而不是采集尺寸 —— 档位降了码率也该降。 */
+    private suspend fun applyBitrate(width: Int, height: Int) {
+        val bitRate = CaptureSpec.bitRateFor(width, height)
+        runtime.onSignaling {
+            runCatching {
+                val sender = videoSender ?: return@runCatching
+                val params = sender.parameters
+                params.degradationPreference = RtpParameters.DegradationPreference.MAINTAIN_FRAMERATE
+                params.encodings.forEach { encoding ->
+                    encoding.maxBitrateBps = bitRate
+                    encoding.maxFramerate = CaptureSpec.FRAME_RATE
+                }
+                sender.setParameters(params)
+            }
+        }
+    }
+
+    /** 诊断行显示 "采集尺寸 → 编码尺寸 @帧率 / 码率"，一眼看出当前档位。 */
+    private fun reportResolution(width: Int, height: Int) {
+        val bitRate = CaptureSpec.bitRateFor(width, height)
+        _diagnostics.update {
+            it.copy(
+                resolution = "${spec.width}×${spec.height} → ${width}×${height} @${CaptureSpec.FRAME_RATE}fps / ${bitRate / 1_000_000}Mbps",
+            )
         }
     }
 

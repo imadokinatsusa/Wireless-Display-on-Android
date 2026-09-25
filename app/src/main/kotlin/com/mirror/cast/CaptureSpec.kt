@@ -55,11 +55,27 @@ object CaptureSpec {
      * 编码尺寸可以更小 —— 算力就是在这里省下来的，帧率也是在这里换回来的。
      */
     fun encodeSize(sourceWidth: Int, sourceHeight: Int, maxLongEdge: Int = MAX_ENCODE_LONG_EDGE): Pair<Int, Int> {
+        if (maxLongEdge <= 0) return align(sourceWidth) to align(sourceHeight)
         val longEdge = maxOf(sourceWidth, sourceHeight)
         if (longEdge <= maxLongEdge) return align(sourceWidth) to align(sourceHeight)
         val scale = maxLongEdge.toDouble() / longEdge
         return align((sourceWidth * scale).toInt()) to align((sourceHeight * scale).toInt())
     }
+
+    /** 画质档位：长边上限（0 = 不缩放，直接用屏幕真实尺寸编码）。 */
+    enum class Quality(val label: String, val maxLongEdge: Int) {
+        FullHd("1080p", 1920),
+        Hd("720p", 1280),
+        Smooth("流畅", 960),
+        Source("原始", 0),
+    }
+
+    /** 默认档位：1080p 级，兼顾清晰与流畅。 */
+    val DEFAULT_QUALITY: Quality = Quality.FullHd
+
+    /** 由长边上限反查档位（服务与界面之间只传数字）。 */
+    fun qualityOf(maxLongEdge: Int): Quality =
+        Quality.entries.firstOrNull { it.maxLongEdge == maxLongEdge } ?: DEFAULT_QUALITY
 
     private fun align(value: Int): Int = maxOf(ALIGNMENT, value / ALIGNMENT * ALIGNMENT)
 
