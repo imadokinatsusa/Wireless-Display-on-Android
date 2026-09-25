@@ -5,12 +5,14 @@ import android.media.projection.MediaProjection
 import com.mirror.cast.CaptureSpec
 import com.mirror.cast.CastSession
 import com.mirror.cast.Diagnostics
-import com.mirror.cast.ResolutionAdjustable
 import com.mirror.cast.SessionState
 import com.mirror.cast.signal.SignalingClient
 import com.mirror.cast.signal.SignalingMessage
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -25,8 +27,6 @@ import org.webrtc.AudioTrack
 import org.webrtc.IceCandidate
 import org.webrtc.MediaConstraints
 import org.webrtc.PeerConnection
-import org.webrtc.RtpParameters
-import org.webrtc.RtpSender
 import org.webrtc.SessionDescription
 import org.webrtc.SurfaceTextureHelper
 import org.webrtc.VideoSource
@@ -48,8 +48,7 @@ class SenderSession(
     private val host: String,
     private val signalingPort: Int,
     private val code: String,
-    initialQuality: CaptureSpec.Quality = CaptureSpec.DEFAULT_QUALITY,
-) : CastSession, ResolutionAdjustable {
+) : CastSession {
 
     private val _state = MutableStateFlow<SessionState>(SessionState.Connecting("$host:$signalingPort"))
     override val state: StateFlow<SessionState> = _state.asStateFlow()
@@ -61,6 +60,9 @@ class SenderSession(
 
     /** ICE 候选从回调线程排队到这里，再由协程写进信令连接。 */
     private val outgoing = Channel<SignalingMessage>(Channel.UNLIMITED)
+
+    /** 收尾专用：不随界面/服务协程一起被取消。 */
+    private val teardownScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     private var scope: CoroutineScope? = null
     private var pumpJob: Job? = null
@@ -74,31 +76,39 @@ class SenderSession(
     private var audioTrack: AudioTrack? = null
     private var capturer: ProjectionVideoCapturer? = null
     private var playback: PlaybackAudioCapturer? = null
-    private var videoSender: RtpSender? = null
-
-    @Volatile
-    private var qualityValue: CaptureSpec.Quality = initialQuality
 
     fun start(scope: CoroutineScope) {
         if (pumpJob != null) return
         this.scope = scope
+        // 失败不放弃：局域网里对端可能还没准备好，重试到成功或用尽次数为止。
         pumpJob = scope.launch {
-            try {
-                runSession()
-            } catch (bye: PeerSaidBye) {
-                _state.value = SessionState.Closed
-                stop()
-            } catch (error: Exception) {
-                fail("${error::class.java.simpleName}: ${error.message}")
+            var attempt = 0
+            while (isActive) {
+                attempt += 1
+                try {
+                    runSession()
+                    return@launch
+                } catch (bye: PeerSaidBye) {
+                    _state.value = SessionState.Closed
+                    stop()
+                    return@launch
+                } catch (error: Exception) {
+                    runCatching { stop() }
+                    if (attempt >= MAX_ATTEMPTS) {
+                        fail("${error::class.java.simpleName}: ${error.message}")
+                        return@launch
+                    }
+                    _diagnostics.update {
+                        it.copy(state = "失败，${RETRY_DELAY_MILLIS / 1000}s 后自动重试（第 $attempt 次）：${error.message}")
+                    }
+                    delay(RETRY_DELAY_MILLIS)
+                }
             }
         }
     }
 
     private suspend fun runSession() {
         runtime.ensureStarted()
-
-        // 编码尺寸由画质档位决定（采集尺寸仍是屏幕真实尺寸，见 CaptureSpec）
-        val (encodeWidth, encodeHeight) = CaptureSpec.encodeSize(spec.width, spec.height, qualityValue.maxLongEdge)
 
         // ── 1) 信令 ────────────────────────────────────────────────────────────
         val signaling = SignalingClient(code).connect(host, signalingPort).getOrElse { error ->
@@ -152,26 +162,11 @@ class SenderSession(
                 bundlePolicy = PeerConnection.BundlePolicy.MAXBUNDLE
                 rtcpMuxPolicy = PeerConnection.RtcpMuxPolicy.REQUIRE
                 continualGatheringPolicy = PeerConnection.ContinualGatheringPolicy.GATHER_ONCE
-                // 屏幕内容场景关掉 CPU 过载检测：它按摄像头场景调优，投屏时只会白白降帧
-                enableCpuOveruseDetection = false
-                // 投屏下限码率：太低会让文字糊成一团
-                screencastMinBitrate = MIN_SCREENCAST_BITRATE
             }
             val created = factory.createPeerConnection(config, observer)
                 ?: error("创建 PeerConnection 失败")
-            videoSender = created.addTrack(newVideoTrack, listOf(STREAM_ID))
+            created.addTrack(newVideoTrack, listOf(STREAM_ID))
             created.addTrack(newAudioTrack, listOf(STREAM_ID))
-            // 保帧率优先：屏幕内容宁可分辨率降一点，也不要卡顿
-            runCatching {
-                val sender = videoSender ?: return@runCatching
-                val params = sender.parameters
-                params.degradationPreference = RtpParameters.DegradationPreference.MAINTAIN_FRAMERATE
-                params.encodings.forEach { encoding ->
-                    encoding.maxBitrateBps = CaptureSpec.bitRateFor(encodeWidth, encodeHeight)
-                    encoding.maxFramerate = CaptureSpec.FRAME_RATE
-                }
-                sender.setParameters(params)
-            }
 
             videoSource = newVideoSource
             videoTrack = newVideoTrack
@@ -182,7 +177,7 @@ class SenderSession(
         peerConnection = connection
 
         // ── 4) 采集（虚拟屏尺寸 = 屏幕真实尺寸） ───────────────────────────────
-        startCapture(encodeWidth, encodeHeight)
+        startCapture()
 
         // ── 5) 发出 offer ─────────────────────────────────────────────────────
         val offer = runtime.onSignaling { connection.awaitOffer() }
@@ -222,15 +217,13 @@ class SenderSession(
         }
     }
 
-    private suspend fun startCapture(encodeWidth: Int, encodeHeight: Int) {
+    private suspend fun startCapture() {
         val source = videoSource ?: error("视频源尚未就绪")
         val created = ProjectionVideoCapturer(projection, spec.densityDpi)
         val textureHelper = SurfaceTextureHelper.create("mirror-capture", runtime.eglContext)
         runtime.onSignaling {
             created.initialize(textureHelper, context, source.capturerObserver)
             created.startCapture(spec.width, spec.height, CaptureSpec.FRAME_RATE)
-            // 采集仍是屏幕真实尺寸，但编码输出压到长边 1920 —— 帧率就是这么换回来的
-            source.adaptOutputFormat(encodeWidth, encodeHeight, CaptureSpec.FRAME_RATE)
         }
         capturer = created
 
@@ -247,53 +240,20 @@ class SenderSession(
         }
     }
 
-    override val quality: CaptureSpec.Quality get() = qualityValue
-
-    /**
-     * 换一档画质：只动**编码输出**，不动采集（虚拟屏尺寸必须与屏幕一致）。
-     * 投屏过程中可以随时切 —— 卡了就降一档，这是最直接的救急手段。
-     */
-    override suspend fun setQuality(quality: CaptureSpec.Quality): Boolean {
-        qualityValue = quality
-        val source = videoSource ?: return false
-        val (width, height) = CaptureSpec.encodeSize(spec.width, spec.height, quality.maxLongEdge)
-        runtime.onSignaling { source.adaptOutputFormat(width, height, CaptureSpec.FRAME_RATE) }
-        applyBitrate(width, height)
-        reportResolution(width, height)
-        return true
-    }
-
-    /** 码率按**编码尺寸**算，而不是采集尺寸 —— 档位降了码率也该降。 */
-    private suspend fun applyBitrate(width: Int, height: Int) {
-        val bitRate = CaptureSpec.bitRateFor(width, height)
-        runtime.onSignaling {
-            runCatching {
-                val sender = videoSender ?: return@runCatching
-                val params = sender.parameters
-                params.degradationPreference = RtpParameters.DegradationPreference.MAINTAIN_FRAMERATE
-                params.encodings.forEach { encoding ->
-                    encoding.maxBitrateBps = bitRate
-                    encoding.maxFramerate = CaptureSpec.FRAME_RATE
-                }
-                sender.setParameters(params)
-            }
-        }
-    }
-
-    /** 诊断行显示 "采集尺寸 → 编码尺寸 @帧率 / 码率"，一眼看出当前档位。 */
-    private fun reportResolution(width: Int, height: Int) {
-        val bitRate = CaptureSpec.bitRateFor(width, height)
-        _diagnostics.update {
-            it.copy(
-                resolution = "${spec.width}×${spec.height} → ${width}×${height} @${CaptureSpec.FRAME_RATE}fps / ${bitRate / 1_000_000}Mbps",
-            )
-        }
-    }
-
     private fun fail(reason: String) {
         _state.value = SessionState.Failed(reason)
         _diagnostics.update { it.copy(state = "失败：$reason") }
         scope?.launch { stop() }
+    }
+
+    /**
+     * 由外部（前台服务）调用的**非挂起**收尾入口。
+     *
+     * 用独立 scope 而不是调用方的 scope：调用方可能正处在被取消的协程里，
+     * 那样"发 Bye、关连接"就会半途夭折，对端只能干等超时。
+     */
+    fun shutdown() {
+        teardownScope.launch { stop() }
     }
 
     override suspend fun stop() {
@@ -341,8 +301,9 @@ class SenderSession(
         const val AUDIO_TRACK_ID = "mirror-audio"
         const val STREAM_ID = "mirror"
 
-        /** 投屏下限码率（1.5Mbps）：低于这个数文字就开始糊。 */
-        const val MIN_SCREENCAST_BITRATE = 1_500_000
+        /** 自动重试次数与间隔：局域网里等对端就绪，最多等这么久。 */
+        const val MAX_ATTEMPTS = 20
+        const val RETRY_DELAY_MILLIS = 2_000L
     }
 }
 
