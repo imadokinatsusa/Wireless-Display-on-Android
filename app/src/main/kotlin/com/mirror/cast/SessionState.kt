@@ -55,6 +55,13 @@ data class Diagnostics(
      * 所以标定完成之前一直是 null。
      */
     val latencyMillis: Int? = null,
+    /**
+     * ICE（媒体通道）的当前状态。
+     *
+     * 卡在"连接中"时它是唯一有用的线索：`CHECKING` 说明还在试探地址、
+     * `FAILED` 说明彻底打不通。
+     */
+    val ice: String? = null,
     val note: String? = null,
 ) {
     /** 拼成一行（界面宽度有限，只显示有效字段）。 */
@@ -64,6 +71,7 @@ data class Diagnostics(
         fps?.let { add("${it}fps") }
         frames?.let { add("${it}帧") }
         latencyMillis?.let { add("延迟 ${it}ms") }
+        ice?.let { add(it) }
         note?.let { add(it) }
     }.joinToString(" · ")
 }
