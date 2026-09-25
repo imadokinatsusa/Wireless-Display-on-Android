@@ -78,6 +78,7 @@ import com.mirror.cast.discovery.ConnectCode
 import com.mirror.cast.p2p.WifiP2pLink
 import com.mirror.cast.qr.QrCode
 import com.mirror.cast.web.ReceiverSession
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import org.webrtc.RendererCommon
 import org.webrtc.SurfaceViewRenderer
@@ -252,6 +253,21 @@ fun ReceiverContent(onFullscreenChange: (Boolean) -> Unit = {}) {
             }
         } else if (p2pStatus.groupOwnerAddress != null) {
             // 又有局域网了就不需要 P2P 组，把它还回去（别占着「一加互传」要用的射频）
+            p2p.stop()
+        }
+    }
+
+    /**
+     * 建组之后如果**一直没人连上**，就到点自动拆掉。
+     *
+     * 这是"建了组忘了退"的兜底：P2P 组会一直占着 Wi-Fi 射频，挡住别的用 P2P 的功能
+     * （实测是「一加互传」），有时只有重启手机才恢复。所以给闲置的组设个上限 ——
+     * 到点还没人用，就还回去。
+     */
+    LaunchedEffect(p2pStatus.groupOwnerAddress, state) {
+        if (p2pStatus.groupOwnerAddress != null && state !is SessionState.Streaming) {
+            delay(P2P_IDLE_TIMEOUT_MILLIS)
+            // 能走到这里，说明这段时间里既没人连上、也没有离开这个页面
             p2p.stop()
         }
     }
@@ -502,6 +518,9 @@ fun ReceiverContent(onFullscreenChange: (Boolean) -> Unit = {}) {
 
 /** 二维码边长：够对方一眼扫到，又不至于把小屏里的等待卡撑爆。 */
 private val QR_SIZE_DP = 148.dp
+
+/** 闲置的 Wi-Fi Direct 组最多留多久 —— 到点没人连就自动拆，别让它占着射频。 */
+private const val P2P_IDLE_TIMEOUT_MILLIS = 3 * 60 * 1000L
 
 private enum class ExpandedRow { None, Quality, FrameRate }
 

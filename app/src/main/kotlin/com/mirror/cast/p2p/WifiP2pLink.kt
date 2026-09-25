@@ -255,7 +255,7 @@ class WifiP2pLink(private val context: Context) {
                             isGroupOwner = info.isGroupOwner,
                             searching = false,
                             message = if (info.isGroupOwner) {
-                                "已建组，本机是群主（$address）"
+                                "已建组，本机是群主（$address）· 再点一次可拆"
                             } else {
                                 "已加入对方的组（群主 $address）"
                             },
