@@ -19,7 +19,6 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.Info
-import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Stop
@@ -45,17 +44,13 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.mirror.cast.qr.ScanActivity
 import com.mirror.cast.CaptureSpec
-import com.mirror.cast.Discovery
 import com.mirror.cast.FailedSession
 import com.mirror.cast.LocalAddress
-import com.mirror.cast.NetworkWatcher
 import com.mirror.cast.MirrorService
 import com.mirror.cast.p2p.WifiP2pLink
 import com.mirror.cast.QualityAdjustable
 import com.mirror.cast.SessionRegistry
 import com.mirror.cast.discovery.CastLink
-import com.mirror.cast.discovery.ConnectCode
-import com.mirror.cast.discovery.DiscoveredDevice
 import kotlinx.coroutines.launch
 
 /**
@@ -70,10 +65,8 @@ import kotlinx.coroutines.launch
 fun SenderContent(lastCrash: String? = null) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    val discovery = remember(context) { Discovery(context, scope) }
-    val devices by discovery.devices.collectAsState()
     val active by SessionRegistry.active.collectAsState()
-    // 扫码与广播搜索最终都归结为"往哪儿投"，所以共用同一个待投目标
+    // 扫码拿到的目标 —— 这是**唯一**的连接入口（不再自动搜索设备）
     var pending: CastRequest? by remember { mutableStateOf(null) }
     var scanHint by remember { mutableStateOf<String?>(null) }
     var wantScan by remember { mutableStateOf(false) }
@@ -125,13 +118,6 @@ fun SenderContent(lastCrash: String? = null) {
     var autoQuality by remember { mutableStateOf(true) }
     var showBitrate by remember { mutableStateOf(false) }
     var showDetails by remember { mutableStateOf(false) }
-    // 网络接口一变（切 Wi-Fi、连上接收端开的热点）就重启发现：否则 UDP socket 还绑在旧接口上
-    val networkWatcher = remember(context) {
-        NetworkWatcher(context) {
-            discovery.stop()
-            discovery.start()
-        }
-    }
 
     val adjustable = active as? QualityAdjustable
     val spec = remember { CaptureSpec.from(context.resources.displayMetrics) }
@@ -255,14 +241,10 @@ fun SenderContent(lastCrash: String? = null) {
     }
 
     DisposableEffect(Unit) {
-        discovery.start()
-        networkWatcher.start()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
         onDispose {
-            networkWatcher.stop()
-            discovery.stop()
             p2p.stop()
         }
     }
@@ -324,14 +306,15 @@ fun SenderContent(lastCrash: String? = null) {
             }
             GroupSpacer()
 
-            SettingsGroup("可用设备") {
+            SettingsGroup("连接") {
                 SettingsRow(
                     icon = Icons.Filled.QrCodeScanner,
                     iconTint = IconTints.blue,
                     title = "扫码直连",
                     subtitle = p2pStatus.message
                         ?: scanHint
-                        ?: "扫接收端屏幕上的二维码，不必等搜索",
+                        ?: "扫接收端屏幕上的二维码即可连接",
+                    showDivider = false,
                     onClick = {
                         scanHint = null
                         if (cameraGranted) {
@@ -341,36 +324,6 @@ fun SenderContent(lastCrash: String? = null) {
                         }
                     },
                 )
-                val found = devices.values.sortedBy { it.beacon.deviceName }
-                if (found.isEmpty()) {
-                    SettingsRow(
-                        icon = Icons.Filled.PhoneAndroid,
-                        iconTint = ColorGray,
-                        title = "等待设备",
-                        subtitle = "在另一台设备上打开本应用、切到「接收」页就行",
-                        showDivider = false,
-                    )
-                } else {
-                    found.forEachIndexed { index, device ->
-                        SettingsRow(
-                            icon = Icons.Filled.PhoneAndroid,
-                            iconTint = IconTints.green,
-                            title = device.beacon.deviceName,
-                            subtitle = ConnectCode.pretty(device.beacon.code),
-                            showDivider = index < found.lastIndex,
-                            onClick = {
-                                startCast(
-                                    CastRequest(
-                                        host = device.host,
-                                        port = device.beacon.tcpPort,
-                                        code = device.beacon.code,
-                                        deviceName = device.beacon.deviceName,
-                                    ),
-                                )
-                            },
-                        )
-                    }
-                }
             }
 
             active?.let { session ->
@@ -443,8 +396,8 @@ fun SenderContent(lastCrash: String? = null) {
 /**
  * 一次投屏请求。
  *
- * 扫码与广播搜索最终都归结成这四个字段，后面的授权与启动服务完全共用一条路径 ——
- * 这样"扫码直连"不是一个特例分支，而只是另一个来源。
+ * 现在**只有扫码一个来源**，自动搜索设备那条路已经整个去掉了 ——
+ * 它带来的麻烦（广播被环境吃掉、多台设备互相干扰）远大于便利。
  */
 private data class CastRequest(
     val host: String,

@@ -65,7 +65,6 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
-import com.mirror.cast.Broadcaster
 import com.mirror.cast.HotspotController
 import com.mirror.cast.CaptureSpec
 import com.mirror.cast.LocalAddress
@@ -101,17 +100,9 @@ fun ReceiverContent(onFullscreenChange: (Boolean) -> Unit = {}) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val application = context.applicationContext as MirrorApplication
-    val code = remember { Broadcaster.newCode() }
+    val code = remember { ConnectCode.random() }
     val session = remember(code) { ReceiverSession(runtime = application.runtime, code = code) }
     val deviceName = remember { Build.MODEL ?: "Android" }
-    val broadcaster = remember(session) {
-        Broadcaster(
-            scope = scope,
-            code = code,
-            portProvider = { session.signalingPort },
-            deviceName = deviceName,
-        )
-    }
 
     /**
      * 热点由**接收端**开 —— 这条分工是刻意的，和 AirDroid 的规则一致：
@@ -178,12 +169,11 @@ fun ReceiverContent(onFullscreenChange: (Boolean) -> Unit = {}) {
     // 不刷新的话对方扫到的是一个连不上的旧地址
     var localIp by remember { mutableStateOf(LocalAddress.ipv4()) }
 
-    // 网络接口一变就重启广播：接收端换了接口（连上热点）后必须重新广播，否则发送端搜不到
+    // 网络接口一变就刷新本机地址：二维码里写的就是它 ——
+    // 换 Wi-Fi 之后不刷新，对方扫到的就是一个连不上的旧地址
     val networkWatcher = remember(context) {
         NetworkWatcher(context) {
             localIp = LocalAddress.ipv4()
-            broadcaster.stop()
-            broadcaster.start()
         }
     }
 
@@ -236,7 +226,6 @@ fun ReceiverContent(onFullscreenChange: (Boolean) -> Unit = {}) {
         networkWatcher.start()
         p2p.start()
         session.prepare()
-        broadcaster.start()
         session.start(scope)
         // 进这一页就把 Wi-Fi Direct 组建起来 —— 这是默认连法，不等按钮、不等用户操作
         if (p2pGranted) {
@@ -275,7 +264,6 @@ fun ReceiverContent(onFullscreenChange: (Boolean) -> Unit = {}) {
     DisposableEffect(session) {
         onDispose {
             networkWatcher.stop()
-            broadcaster.stop()
             p2p.stop()
             hotspot.stop()
             session.detachRenderer()
@@ -354,8 +342,6 @@ fun ReceiverContent(onFullscreenChange: (Boolean) -> Unit = {}) {
                             }
                         }
                         // 开/关热点会换掉网络接口：广播必须重新绑定，否则发送端收不到
-                        broadcaster.stop()
-                        broadcaster.start()
                     },
                     onWifiSettings = {
                         runCatching {
