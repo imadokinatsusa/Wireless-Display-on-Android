@@ -25,6 +25,8 @@ import org.webrtc.IceCandidate
 import org.webrtc.PeerConnection
 import org.webrtc.SessionDescription
 import org.webrtc.SurfaceViewRenderer
+import org.webrtc.VideoFrame
+import org.webrtc.VideoSink
 import org.webrtc.VideoTrack
 
 /**
@@ -52,6 +54,42 @@ class ReceiverSession(
 
     private val outgoing = Channel<SignalingMessage>(Channel.UNLIMITED)
     private val server = SignalingServer(code)
+
+    /**
+     * 「接收端时钟 − 发送端时钟」，毫秒，由发送端的钟差标定给出。
+     *
+     * `Long.MIN_VALUE` = 还没标定。**没标定就绝不能算延迟** ——
+     * 两台手机的系统时间差可能比要测的延迟本身还大，硬算出来的数字纯属误导。
+     */
+    @Volatile
+    private var clockOffsetMillis: Long = Long.MIN_VALUE
+
+    /** 最近一帧的端到端延迟（毫秒）；-1 = 还没测出来。 */
+    @Volatile
+    private var endToEndLatencyMillis: Int = -1
+
+    private var latencyJob: Job? = null
+
+    /**
+     * 逐帧观察者：**只用来量延迟**，不参与渲染（渲染器是另一个 sink）。
+     *
+     * 它在视频帧线程上被调用，所以只能写 `@Volatile` 标量，碰界面状态会崩；
+     * 也**不能** release 这一帧 —— 帧的所有权归框架，谁 retain 谁 release。
+     */
+    private val frameObserver = object : VideoSink {
+        override fun onFrame(frame: VideoFrame) {
+            val offset = clockOffsetMillis
+            if (offset == Long.MIN_VALUE) return
+            val captureOnSenderAxis = frame.timestampNs / 1_000_000L
+            val nowOnSenderAxis = System.currentTimeMillis() - offset
+            val latency = nowOnSenderAxis - captureOnSenderAxis
+            // 只接受物理上说得通的读数：离谱的数字说明帧时间戳的语义和我们的设想不同，
+            // 与其显示一个骗人的值，不如不显示
+            if (latency in 0L..MAX_PLAUSIBLE_LATENCY_MILLIS) {
+                endToEndLatencyMillis = latency.toInt()
+            }
+        }
+    }
 
     /** 收尾专用：不随界面协程一起被取消（否则对端永远等不到 Bye）。 */
     private val teardownScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -111,6 +149,15 @@ class ReceiverSession(
     fun start(scope: CoroutineScope) {
         if (job != null) return
         this.scope = scope
+        latencyJob = scope.launch {
+            while (isActive) {
+                delay(LATENCY_REPORT_INTERVAL_MILLIS)
+                val latency = endToEndLatencyMillis
+                if (latency >= 0) {
+                    _diagnostics.update { it.copy(latencyMillis = latency) }
+                }
+            }
+        }
         job = scope.launch {
             var attempt = 0
             while (isActive) {
@@ -207,6 +254,25 @@ class ReceiverSession(
                     }
                 }
 
+                // 钟差标定：立刻打上"收到"与"回发"两个时刻 —— 中间别做任何耗时的事，
+                // 否则这段处理时间会被算进往返里，进而把钟差带歪
+                is SignalingMessage.ClockProbe -> {
+                    val t1 = System.currentTimeMillis()
+                    accepted.send(
+                        SignalingMessage.ClockReply(
+                            t0 = message.t0,
+                            t1 = t1,
+                            t2 = System.currentTimeMillis(),
+                        ),
+                    )
+                }
+
+                // 发送端标定出的钟差：有了它，"现在"才能换算到发送端的时间轴上
+                is SignalingMessage.ClockBase -> {
+                    clockOffsetMillis = message.offsetMillis
+                    _diagnostics.update { it.copy(note = "钟差标定 ${message.offsetMillis}ms") }
+                }
+
                 // 发送端告诉我们当前参数与预算
                 is SignalingMessage.QualityState -> {
                     remoteQuality = message.quality
@@ -263,6 +329,7 @@ class ReceiverSession(
         renderer?.let { view ->
             runCatching { track.addSink(view) }
         }
+        runCatching { track.addSink(frameObserver) }
         _diagnostics.update { it.copy(state = "已收到画面") }
     }
 
@@ -283,8 +350,14 @@ class ReceiverSession(
         runCatching { channel?.close() }
         channel = null
 
-        remoteVideo?.let { track -> renderer?.let { view -> runCatching { track.removeSink(view) } } }
+        remoteVideo?.let { track ->
+            renderer?.let { view -> runCatching { track.removeSink(view) } }
+            runCatching { track.removeSink(frameObserver) }
+        }
         remoteVideo = null
+        // 换对端就要重新标定：钟差是"这一对设备"的属性，不是全局常量
+        clockOffsetMillis = Long.MIN_VALUE
+        endToEndLatencyMillis = -1
 
         runtime.onSignaling {
             runCatching { peerConnection?.close() }
@@ -297,6 +370,7 @@ class ReceiverSession(
         // 同 SenderSession：不 cancel 自己所在的协程，靠关闭监听与信令通道退出循环
         server.close()
         releasePeer()
+        latencyJob?.cancel()
 
         if (_state.value !is SessionState.Failed) {
             _state.value = SessionState.Closed
@@ -320,5 +394,11 @@ class ReceiverSession(
         /** 协商失败后的重试上限与间隔。 */
         const val MAX_ATTEMPTS = 20
         const val RETRY_DELAY_MILLIS = 2_000L
+
+        /** 延迟读数上报间隔：界面每秒刷一次就够。 */
+        const val LATENCY_REPORT_INTERVAL_MILLIS = 1_000L
+
+        /** 超过这个毫秒数显然不是延迟，而是帧时间戳的语义和我们的设想不一样。 */
+        const val MAX_PLAUSIBLE_LATENCY_MILLIS = 10_000L
     }
 }

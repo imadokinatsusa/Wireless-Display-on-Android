@@ -9,6 +9,7 @@ import com.mirror.cast.Diagnostics
 import com.mirror.cast.LinkStats
 import com.mirror.cast.QualityAdjustable
 import com.mirror.cast.SessionState
+import com.mirror.cast.signal.ClockSync
 import com.mirror.cast.signal.SignalingChannel
 import com.mirror.cast.signal.SignalingClient
 import com.mirror.cast.signal.SignalingMessage
@@ -115,6 +116,9 @@ class SenderSession(
     private var congestedStreak = 0
     private var healthyStreak = 0
 
+    /** 钟差标定里往返最小的那一次 —— 往返越小，两端处理耗时被忽略带来的误差越小。 */
+    private var bestClockEstimate: ClockSync.Estimate? = null
+
     override val quality: CaptureSpec.Quality get() = qualityValue
 
     override val frameRate: Int get() = frameRateValue
@@ -193,6 +197,8 @@ class SenderSession(
                 _state.value = SessionState.Streaming("$host:$signalingPort")
                 _diagnostics.update { it.copy(state = "投屏中") }
                 broadcastQualityState()
+                // 标定两台设备的钟差 —— 端到端延迟测量全靠它
+                scope?.launch { calibrateClock() }
             },
             onFailed = { reason -> fail("$reason（本机 ${LocalAddress.summary()}）") },
             onRemoteVideo = { /* 发送端不接收画面 */ },
@@ -257,6 +263,19 @@ class SenderSession(
                     connection.addIceCandidate(
                         IceCandidate(message.sdpMid, message.sdpMLineIndex, message.candidate),
                     )
+                }
+
+                // 钟差标定应答：t3 取收到这一刻；算完把基准回给接收端
+                is SignalingMessage.ClockReply -> {
+                    val t3 = System.currentTimeMillis()
+                    val estimate = ClockSync.estimate(message.t0, message.t1, message.t2, t3)
+                    val previous = bestClockEstimate
+                    if (previous == null || estimate.roundTripMillis < previous.roundTripMillis) {
+                        bestClockEstimate = estimate
+                    }
+                    bestClockEstimate?.let { chosen ->
+                        channel?.send(SignalingMessage.ClockBase(chosen.offsetMillis))
+                    }
                 }
 
                 // 接收端只能在上限之内调画质与帧率
@@ -404,6 +423,21 @@ class SenderSession(
                 resolution = "${spec.width}×${spec.height} → ${width}×${height} @${frameRateValue}fps / " +
                     "${bitRate / 1_000_000}.${(bitRate % 1_000_000) / 100_000}Mbps · ${qualityValue.label} · $budgetLabel",
             )
+        }
+    }
+
+    /**
+     * 标定两台设备的钟差。
+     *
+     * 发几轮四时戳探测，取**往返最小**的那次作为最可信的基准，并立刻广播给接收端 ——
+     * 它必须先把"现在"换算到发送端的时间轴上，才能和我们打在帧上的采集时刻相减。
+     */
+    private suspend fun calibrateClock() {
+        repeat(CLOCK_PROBE_ROUNDS) {
+            val target = channel ?: return
+            val t0 = System.currentTimeMillis()
+            if (target.send(SignalingMessage.ClockProbe(t0)).isFailure) return
+            delay(CLOCK_PROBE_INTERVAL_MILLIS)
         }
     }
 
@@ -604,6 +638,10 @@ class SenderSession(
         /** 链路观测间隔与单次查询超时。 */
         const val STATS_INTERVAL_MILLIS = 2_000L
         const val STATS_TIMEOUT_MILLIS = 2_000L
+
+        /** 钟差标定：轮数与间隔。几轮取最优，足以抵掉一次协程调度抖动。 */
+        const val CLOCK_PROBE_ROUNDS = 3
+        const val CLOCK_PROBE_INTERVAL_MILLIS = 300L
     }
 }
 

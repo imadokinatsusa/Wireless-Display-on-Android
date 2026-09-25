@@ -48,6 +48,13 @@ data class Diagnostics(
     val resolution: String? = null,
     val fps: Int? = null,
     val frames: Long? = null,
+    /**
+     * 端到端延迟（毫秒）：从发送端屏幕被采集，到接收端把这一帧渲染出来。
+     *
+     * 它依赖一次时钟标定（两台设备的系统时间差可能比延迟本身还大），
+     * 所以标定完成之前一直是 null。
+     */
+    val latencyMillis: Int? = null,
     val note: String? = null,
 ) {
     /** 拼成一行（界面宽度有限，只显示有效字段）。 */
@@ -56,6 +63,7 @@ data class Diagnostics(
         resolution?.let { add(it) }
         fps?.let { add("${it}fps") }
         frames?.let { add("${it}帧") }
+        latencyMillis?.let { add("延迟 ${it}ms") }
         note?.let { add(it) }
     }.joinToString(" · ")
 }

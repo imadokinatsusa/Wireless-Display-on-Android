@@ -54,6 +54,25 @@ sealed interface SignalingMessage {
         val bitrateLimitKbps: Int,
     ) : SignalingMessage
 
+    /**
+     * 时钟探测（发送端 → 接收端）。
+     *
+     * 端到端延迟**不能**拿两台的本地时钟直接相减 —— 两台手机的系统时间通常相差
+     * 几十到几百毫秒，比要测的延迟本身还大。所以先做一次 NTP 式的四时戳往返，
+     * 把「接收端时钟 − 发送端时钟」这个固定偏差标定出来，之后所有时刻都在
+     * **发送端的时间轴**上比较。前提假设：一次会话之内时钟漂移可忽略。
+     */
+    data class ClockProbe(val t0: Long) : SignalingMessage
+
+    /** 时钟探测应答（接收端 → 发送端）：`t1` = 收到时刻，`t2` = 回发时刻。 */
+    data class ClockReply(val t0: Long, val t1: Long, val t2: Long) : SignalingMessage
+
+    /**
+     * 时钟基准（发送端 → 接收端）：标定出的偏差，单位毫秒，含义是
+     * `接收端时钟 − 发送端时钟`。接收端据此把自己看到的时刻换算回发送端时间轴。
+     */
+    data class ClockBase(val offsetMillis: Long) : SignalingMessage
+
     /** 结束会话。 */
     data object Bye : SignalingMessage
 }
@@ -75,6 +94,12 @@ object SignalingCodec {
 
     private const val QUALITY_STATE_PREFIX = "QUALITY_STATE\t"
 
+    private const val CLOCK_PROBE_PREFIX = "CLOCK_PROBE\t"
+
+    private const val CLOCK_REPLY_PREFIX = "CLOCK_REPLY\t"
+
+    private const val CLOCK_BASE_PREFIX = "CLOCK_BASE\t"
+
     fun encode(message: SignalingMessage): ByteArray = when (message) {
         is SignalingMessage.Hello -> withHead("HELLO", message.code)
         is SignalingMessage.Offer -> withHead("OFFER", message.sdp)
@@ -90,6 +115,14 @@ object SignalingCodec {
                 "$QUALITY_STATE_PREFIX${message.frameRate}\t${message.bitrateLimitKbps}",
                 message.quality,
             )
+
+        is SignalingMessage.ClockProbe -> "$CLOCK_PROBE_PREFIX${message.t0}".toByteArray(Charsets.UTF_8)
+
+        is SignalingMessage.ClockReply ->
+            "$CLOCK_REPLY_PREFIX${message.t0}\t${message.t1}\t${message.t2}".toByteArray(Charsets.UTF_8)
+
+        is SignalingMessage.ClockBase ->
+            "$CLOCK_BASE_PREFIX${message.offsetMillis}".toByteArray(Charsets.UTF_8)
 
         SignalingMessage.Bye -> "BYE".toByteArray(Charsets.UTF_8)
     }
@@ -119,6 +152,25 @@ object SignalingCodec {
                 val fps = parts[0].toIntOrNull() ?: return null
                 val kbps = parts[1].toIntOrNull() ?: return null
                 SignalingMessage.QualityState(quality = body, frameRate = fps, bitrateLimitKbps = kbps)
+            }
+
+            head.startsWith(CLOCK_PROBE_PREFIX) -> {
+                val t0 = head.removePrefix(CLOCK_PROBE_PREFIX).toLongOrNull() ?: return null
+                SignalingMessage.ClockProbe(t0)
+            }
+
+            head.startsWith(CLOCK_REPLY_PREFIX) -> {
+                val parts = head.removePrefix(CLOCK_REPLY_PREFIX).split('\t')
+                if (parts.size != 3) return null
+                val t0 = parts[0].toLongOrNull() ?: return null
+                val t1 = parts[1].toLongOrNull() ?: return null
+                val t2 = parts[2].toLongOrNull() ?: return null
+                SignalingMessage.ClockReply(t0 = t0, t1 = t1, t2 = t2)
+            }
+
+            head.startsWith(CLOCK_BASE_PREFIX) -> {
+                val offset = head.removePrefix(CLOCK_BASE_PREFIX).toLongOrNull() ?: return null
+                SignalingMessage.ClockBase(offset)
             }
 
             head.startsWith(CANDIDATE_PREFIX) -> {
