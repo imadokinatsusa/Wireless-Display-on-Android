@@ -3,6 +3,7 @@ package com.mirror.cast
 import android.content.Context
 import com.mirror.cast.discovery.Beacon
 import com.mirror.cast.discovery.DiscoveredDevice
+import com.mirror.cast.discovery.ProbeProtocol
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -50,18 +51,25 @@ class Discovery(
         }
     }
 
+    /** 最近一轮扫描的目标，显示在界面上用 —— 扫不到时必须能看出"到底扫的是哪儿"。 */
+    @Volatile
+    var lastScanTarget: String? = null
+        private set
+
     private suspend fun scanOnce() {
         val prefixes = ProbeScanner.prefixesFor(LocalAddress.all())
         if (prefixes.isEmpty()) {
             failureReason = "本机没有可用的局域网地址"
+            lastScanTarget = null
             return
         }
         failureReason = null
+        lastScanTarget = prefixes.joinToString(" ") { "${it}*:${ProbeProtocol.PORT}" }
 
         val now = System.currentTimeMillis()
-        val found = LinkedHashMap<String, DiscoveredDevice>()
-        ProbeScanner.scan(prefixes) { host, reply ->
-            found[host] = DiscoveredDevice(
+        // 整轮扫完再一次性替换：否则列表会在扫描过程中反复增删、界面一直抖
+        _devices.value = ProbeScanner.scan(prefixes).associate { (host, reply) ->
+            host to DiscoveredDevice(
                 beacon = Beacon(
                     code = reply.code,
                     tcpPort = reply.signalingPort,
@@ -72,8 +80,6 @@ class Discovery(
                 lastSeenMillis = now,
             )
         }
-        // 整轮扫完再一次性替换：否则列表会在扫描过程中反复增删、界面一直抖
-        _devices.value = found
     }
 
     fun stop() {

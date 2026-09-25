@@ -22,24 +22,30 @@ import java.net.Socket
  */
 object ProbeScanner {
 
+    /**
+     * 扫一轮，返回所有应答了的主机。
+     *
+     * 刻意**返回列表**而不是用回调：24 路并发同时往里塞结果，
+     * 用回调就要求调用方自己保证线程安全，容易埋一个"偶尔少一台"的暗雷。
+     */
     suspend fun scan(
         prefixes: List<String>,
         port: Int = ProbeProtocol.PORT,
-        onFound: (host: String, reply: ProbeReply) -> Unit,
-    ) {
+    ): List<Pair<String, ProbeReply>> {
         val targets = prefixes.distinct().flatMap { prefix -> (1..LAST_OCTET).map { "$prefix$it" } }
-        if (targets.isEmpty()) return
+        if (targets.isEmpty()) return emptyList()
         val gate = Semaphore(CONCURRENCY)
-        coroutineScope {
+        return coroutineScope {
             targets
                 .map { host ->
                     async(Dispatchers.IO) {
                         gate.withPermit {
-                            probe(host, port)?.let { reply -> onFound(host, reply) }
+                            probe(host, port)?.let { reply -> host to reply }
                         }
                     }
                 }
                 .awaitAll()
+                .filterNotNull()
         }
     }
 

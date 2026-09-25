@@ -219,19 +219,18 @@ fun ReceiverContent(onFullscreenChange: (Boolean) -> Unit = {}) {
         p2pStatus.groupOwnerAddress,
     ) {
         val port = session.signalingPort
-        if (port <= 0) {
+        // 只有**真的一个可用网络都没有**时，二维码才切到 Wi-Fi Direct 地址；
+        // 其余情况一律用普通局域网地址。因为建 P2P 组会断开 Wi-Fi，
+        // 那时用 P2P 地址反而逼着对方先配对，得不偿失。
+        val groupOwner = p2pStatus.groupOwnerAddress
+        val useWifiDirect = groupOwner != null && localIp == null
+        val host = if (useWifiDirect) groupOwner else localIp
+        if (port <= 0 || host == null) {
             null
         } else {
-            // 建了 Wi-Fi Direct 组就优先用它：那个地址不依赖任何已有网络
-            val groupOwner = p2pStatus.groupOwnerAddress
-            val host = groupOwner ?: localIp
-            if (host == null) {
-                null
-            } else {
-                CastLink.encode(
-                    CastTarget(host, port, code, deviceName, viaWifiDirect = groupOwner != null),
-                )
-            }
+            CastLink.encode(
+                CastTarget(host, port, code, deviceName, viaWifiDirect = useWifiDirect),
+            )
         }
     }
     val qrImage = remember(castLink, qrPixels) { castLink?.let { QrCode.bitmap(it, qrPixels) } }
@@ -242,11 +241,18 @@ fun ReceiverContent(onFullscreenChange: (Boolean) -> Unit = {}) {
         session.prepare()
         responder.start()
         session.start(scope)
-        // 进这一页就把 Wi-Fi Direct 组建起来 —— 这是默认连法，不等按钮、不等用户操作
-        if (p2pGranted) {
-            p2p.createGroup()
-        } else {
-            p2pPermissionLauncher.launch(p2pPermission)
+        // ⚠️ 只在**一个可用网络都没有**时才建 Wi-Fi Direct 组。
+        //
+        // 手机基本都是单射频：一旦建 P2P 组，本机就从原来的 Wi-Fi 上断开了，
+        // 地址只剩 192.168.49.1。而发送端还留在 Wi-Fi 网段 —— 结果是
+        // **扫码（二维码里是 Wi-Fi 地址）和扫端口会双双失效**（这个坑踩过）。
+        // 所以建组必须给"同一 Wi-Fi / 热点"这条主路让位，只在真的离线时才用它。
+        if (localIp == null) {
+            if (p2pGranted) {
+                p2p.createGroup()
+            } else {
+                p2pPermissionLauncher.launch(p2pPermission)
+            }
         }
     }
 
@@ -350,7 +356,12 @@ fun ReceiverContent(onFullscreenChange: (Boolean) -> Unit = {}) {
                     code = code,
                     deviceName = deviceName,
                     qr = qrImage,
-                    statusLine = diagnostics.line(),
+                    statusLine = "本机 ${LocalAddress.summary()} · " +
+                        (
+                            responder.failureReason?.let { "应答失败 $it" }
+                                ?: "应答端口 ${responder.port}"
+                            ) +
+                        " · " + diagnostics.line(),
                     hotspotActive = hotspot.running,
                     hotspotDetail = hotspotError
                         ?: hotspotInfo?.let { "${it.displayName} / 密码 ${it.password}" },
