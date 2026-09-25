@@ -194,10 +194,11 @@ class WifiP2pLink(private val context: Context) {
         val current = channel ?: return
         runCatching {
             wifiP2p.requestPeers(current) { list ->
-                peerDevices = list.deviceList
+                // getDeviceList() 返回的是 Collection（不是 List），这里统一收成 List
+                peerDevices = list.deviceList.toList()
                 _status.update {
                     it.copy(
-                        peers = list.deviceList.map { device -> device.deviceName },
+                        peers = peerDevices.map { device -> device.deviceName },
                         searching = false,
                     )
                 }
