@@ -2,6 +2,7 @@ package com.mirror.cast.ui
 
 import android.Manifest
 import android.app.Activity
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.media.projection.MediaProjectionManager
 import android.os.Build
@@ -42,8 +43,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
-import com.journeyapps.barcodescanner.ScanContract
-import com.journeyapps.barcodescanner.ScanOptions
+import com.mirror.cast.qr.ScanActivity
 import com.mirror.cast.CaptureSpec
 import com.mirror.cast.Discovery
 import com.mirror.cast.FailedSession
@@ -84,8 +84,7 @@ fun SenderContent(lastCrash: String? = null) {
         )
     }
 
-    /** 一次待发起的投屏：弹录屏授权这件事统一在这里做，免得各处重复同一段流程。 */
-    var pendingDirect by remember { mutableStateOf<CastRequest?>(null) }
+    /** 一次待发起的投屏：弹出录屏授权前先把目标存下。 */
 
     /**
      * 离线场景用的 Wi-Fi Direct 链路。
@@ -167,6 +166,22 @@ fun SenderContent(lastCrash: String? = null) {
         )
     }
 
+    /**
+     * 统一弹录屏授权。
+     *
+     * ⚠️ **必须在用户操作的同步路径里启动**，绝不能绕 coroutine（`LaunchedEffect`）。
+     * MIUI 这类 ROM 会检查这个弹窗是不是"由用户操作直接触发"的 ——
+     * 从协程里启动会被判定成后台启动、**整条直接拦掉**，
+     * 表现就是"点了没反应、什么都不弹"（踩过）。
+     *
+     * 录屏授权本身是系统的硬性要求，去不掉：没有用户点"立即开始"，任何 App 都拿不到画面。
+     */
+    val startCast: (CastRequest) -> Unit = { target ->
+        pending = target
+        val manager = context.getSystemService(MediaProjectionManager::class.java)
+        projectionLauncher.launch(manager.createScreenCaptureIntent())
+    }
+
     val notificationPermission = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
     ) { }
@@ -182,8 +197,11 @@ fun SenderContent(lastCrash: String? = null) {
         }
     }
 
-    val scanner = rememberLauncherForActivityResult(ScanContract()) { result ->
-        val contents = result.contents
+    val scanner = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult(),
+    ) { result ->
+        if (result.resultCode != Activity.RESULT_OK) return@rememberLauncherForActivityResult
+        val contents = result.data?.getStringExtra(ScanActivity.EXTRA_RESULT)
         if (contents == null) return@rememberLauncherForActivityResult // 用户取消了扫码
         val target = CastLink.decode(contents)
         if (target == null) {
@@ -208,22 +226,8 @@ fun SenderContent(lastCrash: String? = null) {
                 p2pPermissionLauncher.launch(p2pPermission)
             }
         } else {
-            pendingDirect = request
+            startCast(request)
         }
-    }
-
-    /**
-     * 统一弹录屏授权。
-     *
-     * 走 LaunchedEffect 而不是直接调用：要让"扫码"和"点设备"两条路径共用同一入口，
-     * 而它们谁都无法在定义顺序上先于 launcher。
-     */
-    LaunchedEffect(pendingDirect) {
-        val target = pendingDirect ?: return@LaunchedEffect
-        pending = target
-        val manager = context.getSystemService(MediaProjectionManager::class.java)
-        projectionLauncher.launch(manager.createScreenCaptureIntent())
-        pendingDirect = null
     }
 
     // 搜到设备就自动加入对方的组（二维码里带着对方名字）
@@ -239,20 +243,14 @@ fun SenderContent(lastCrash: String? = null) {
         val target = pendingP2p ?: return@LaunchedEffect
         val address = p2pStatus.groupOwnerAddress ?: return@LaunchedEffect
         pendingP2p = null
-        pendingDirect = target.copy(host = address, viaWifiDirect = false)
+        startCast(target.copy(host = address, viaWifiDirect = false))
     }
 
     // 相机权限是异步的：拿到之后才由这里真正拉起扫码界面
     LaunchedEffect(wantScan, cameraGranted) {
         if (wantScan && cameraGranted) {
             wantScan = false
-            scanner.launch(
-                ScanOptions()
-                    .setDesiredBarcodeFormats(ScanOptions.QR_CODE)
-                    .setPrompt("对准接收端的二维码")
-                    .setBeepEnabled(false)
-                    .setOrientationLocked(false),
-            )
+            scanner.launch(Intent(context, ScanActivity::class.java))
         }
     }
 
@@ -361,11 +359,13 @@ fun SenderContent(lastCrash: String? = null) {
                             subtitle = ConnectCode.pretty(device.beacon.code),
                             showDivider = index < found.lastIndex,
                             onClick = {
-                                pendingDirect = CastRequest(
-                                    host = device.host,
-                                    port = device.beacon.tcpPort,
-                                    code = device.beacon.code,
-                                    deviceName = device.beacon.deviceName,
+                                startCast(
+                                    CastRequest(
+                                        host = device.host,
+                                        port = device.beacon.tcpPort,
+                                        code = device.beacon.code,
+                                        deviceName = device.beacon.deviceName,
+                                    ),
                                 )
                             },
                         )

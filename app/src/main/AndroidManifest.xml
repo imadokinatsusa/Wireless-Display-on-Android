@@ -48,6 +48,13 @@
             </intent-filter>
         </activity>
 
+        <!-- 扫码界面：竖屏 + 自带取景框，我们自己实现（库自带的那个是横屏的） -->
+        <activity
+            android:name=".qr.ScanActivity"
+            android:exported="false"
+            android:screenOrientation="portrait"
+            android:theme="@android:style/Theme.Material.NoActionBar.Fullscreen" />
+
         <!-- 采集与推流住在这里，切后台不会被系统掐掉 -->
         <service
             android:name=".MirrorService"
