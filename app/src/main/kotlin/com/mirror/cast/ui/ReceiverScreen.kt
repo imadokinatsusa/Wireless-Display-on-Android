@@ -6,7 +6,6 @@ import android.os.Build
 import android.provider.Settings
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.Arrangement
@@ -209,7 +208,10 @@ fun ReceiverContent(onFullscreenChange: (Boolean) -> Unit = {}) {
                         )
                     },
                 )
-                .clip(RoundedCornerShape(if (fullscreen) 0.dp else 14.dp)),
+                .clip(RoundedCornerShape(if (fullscreen) 0.dp else 14.dp))
+                // 等待态的内容直接压在这块板上，所以底色必须是确定的黑 ——
+                // 不能指望 SurfaceView 未出帧时的底色（浅色主题下会是白的，白字就没了）
+                .background(Color.Black),
         ) {
             VideoSurface(
                 application = application,
@@ -399,7 +401,12 @@ private fun SmallIconButton(
     }
 }
 
-/** 等待中的提示卡：连接码 + 下一步 + Wi-Fi 设置。 */
+/**
+ * 等待连接时浮在画面区中央的提示：连接码 + 二维码 + 下一步 + Wi-Fi 设置。
+ *
+ * **刻意不给自己加背景**：画面区本身就是一块深色底板，再套一层深灰圆角卡
+ * 就是"框里套框"。内容直接压在这块板上反而更干净 —— 卡片不再嵌卡片。
+ */
 @Composable
 private fun ConnectionCard(
     code: String,
@@ -410,12 +417,7 @@ private fun ConnectionCard(
     modifier: Modifier = Modifier,
 ) {
     Column(
-        modifier = modifier
-            .padding(20.dp)
-            .clip(RoundedCornerShape(22.dp))
-            .background(Color(0xFF1C1C1E))
-            .border(1.dp, Color(0x1FFFFFFF), RoundedCornerShape(22.dp))
-            .padding(horizontal = 24.dp, vertical = 20.dp),
+        modifier = modifier.padding(horizontal = 24.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
