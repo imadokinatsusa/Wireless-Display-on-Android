@@ -28,6 +28,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -39,6 +40,7 @@ import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontFamily
@@ -48,11 +50,13 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import com.mirror.cast.Broadcaster
+import com.mirror.cast.CaptureSpec
 import com.mirror.cast.MirrorApplication
 import com.mirror.cast.SessionState
 import com.mirror.cast.discovery.ConnectCode
 import com.mirror.cast.web.ReceiverSession
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import org.webrtc.RendererCommon
 import org.webrtc.SurfaceViewRenderer
 
@@ -60,13 +64,15 @@ import org.webrtc.SurfaceViewRenderer
  * 接收端：亮出连接码 → 等发送端来连 → 像看视频一样看画面。
  *
  * 播放器式交互：
- * - 一开始投屏就自动全屏、且不显示任何按钮；
- * - 点画面唤出/收起控制层，全屏时 3 秒自动淡出；
- * - 控制层是磨砂玻璃面板，按钮做成小号胶囊（不是一排大按钮）；
+ * - **一开始投屏就自动全屏、且不显示任何按钮**；点画面唤出/收起控制层，3 秒自动淡出；
+ * - 底部三个按钮：**全屏/小窗**、**画质**、**帧率** —— 后两个点击后展开一排档位，
+ *   通过信令连接把请求发回发送端（画质是发送端的编码参数，但看画面的人最清楚该调什么）；
  * - 双指缩放（1x-6x）+ 单指拖动；沉浸式隐藏系统栏。
  *
- * 对端停止后不会停在"已停止"：会话自己回去继续等下一个（诊断行会写"继续等待"）。
- * 退出用 ReceiverSession.shutdown（会话自带 scope）—— 用界面 scope 会因被取消而发不出 Bye。
+ * **旋转/尺寸变化后会复位缩放并让渲染器重新布局** —— 否则画面会顶着旧比例，
+ * 看起来"没有适应屏幕"。
+ *
+ * 对端停止后不会停在"已停止"：会话自己回去继续等下一个。
  */
 @Composable
 fun ReceiverScreen(onBack: () -> Unit) {
@@ -93,8 +99,13 @@ fun ReceiverScreen(onBack: () -> Unit) {
     var fullscreen by remember { mutableStateOf(false) }
     var fillScreen by remember { mutableStateOf(false) }
     var controlsVisible by remember { mutableStateOf(true) }
+    var pickerRow by remember { mutableStateOf(PickerRow.None) }
+
+    var qualityName by remember { mutableStateOf(CaptureSpec.DEFAULT_QUALITY.name) }
+    var fpsValue by remember { mutableIntStateOf(CaptureSpec.DEFAULT_FRAME_RATE) }
 
     val state by session.state.collectAsState()
+    val configuration = LocalConfiguration.current
 
     LaunchedEffect(session) {
         session.prepare()
@@ -107,6 +118,24 @@ fun ReceiverScreen(onBack: () -> Unit) {
         if (state is SessionState.Streaming) {
             fullscreen = true
             controlsVisible = false
+            pickerRow = PickerRow.None
+        }
+    }
+
+    // 旋转 / 尺寸变化：复位缩放平移，并让渲染器按新尺寸重新布局（比例才会真的适应）
+    LaunchedEffect(configuration.orientation, configuration.screenWidthDp, configuration.screenHeightDp) {
+        zoomState.value = 1f
+        offsetXState.value = 0f
+        offsetYState.value = 0f
+        renderer?.let { view ->
+            view.setScalingType(
+                if (fillScreen) {
+                    RendererCommon.ScalingType.SCALE_ASPECT_FILL
+                } else {
+                    RendererCommon.ScalingType.SCALE_ASPECT_FIT
+                },
+            )
+            view.requestLayout()
         }
     }
 
@@ -120,8 +149,8 @@ fun ReceiverScreen(onBack: () -> Unit) {
         )
     }
 
-    LaunchedEffect(controlsVisible, fullscreen) {
-        if (fullscreen && controlsVisible) {
+    LaunchedEffect(controlsVisible, fullscreen, pickerRow) {
+        if (fullscreen && controlsVisible && pickerRow == PickerRow.None) {
             delay(3_000)
             controlsVisible = false
         }
@@ -198,7 +227,7 @@ fun ReceiverScreen(onBack: () -> Unit) {
                     .align(Alignment.TopStart)
                     .padding(top = 6.dp),
             ) {
-                SmallButton(text = if (fullscreen) "< 退出全屏" else "<- 返回") {
+                SmallButton(text = if (fullscreen) "退出全屏" else "返回") {
                     if (fullscreen) fullscreen = false else onBack()
                 }
             }
@@ -211,22 +240,55 @@ fun ReceiverScreen(onBack: () -> Unit) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
-                    SmallButton(text = if (fullscreen) "窗口" else "全屏") {
+                    SmallButton(text = if (fullscreen) "小窗" else "全屏") {
                         fullscreen = !fullscreen
+                        pickerRow = PickerRow.None
                     }
-                    SmallButton(text = if (fillScreen) "填充" else "适应") {
-                        fillScreen = !fillScreen
+                    SmallButton(text = "画质 ${CaptureSpec.qualityOf(qualityName).label}") {
+                        pickerRow = if (pickerRow == PickerRow.Quality) PickerRow.None else PickerRow.Quality
                     }
-                    SmallButton(text = "复位") { reset() }
+                    SmallButton(text = "帧率 ${fpsValue}fps") {
+                        pickerRow = if (pickerRow == PickerRow.FrameRate) PickerRow.None else PickerRow.FrameRate
+                    }
                     Spacer(modifier = Modifier.weight(1f))
-                    Text(
-                        text = "%.1fx".format(zoomState.value),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = Color(0xFFB0B0B0),
-                    )
+                    SmallButton(text = "缩放 ${"%.1f".format(zoomState.value)}x") { reset() }
                 }
+
+                if (pickerRow == PickerRow.Quality) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        CaptureSpec.Quality.entries.forEach { tier ->
+                            SmallButton(
+                                text = if (tier.name == qualityName) "● ${tier.label}" else tier.label,
+                            ) {
+                                qualityName = tier.name
+                                scope.launch { session.requestQuality(qualityName, fpsValue) }
+                            }
+                        }
+                    }
+                }
+
+                if (pickerRow == PickerRow.FrameRate) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        CaptureSpec.FrameRateTier.entries.forEach { tier ->
+                            val target = CaptureSpec.resolveFps(tier, context.displayRefreshRateCompat())
+                            SmallButton(
+                                text = if (target == fpsValue) "● ${tier.label}" else tier.label,
+                            ) {
+                                fpsValue = target
+                                scope.launch { session.requestQuality(qualityName, target) }
+                            }
+                        }
+                    }
+                }
+
                 Text(
                     text = diagnostics.line(),
                     style = MaterialTheme.typography.labelSmall,
@@ -238,7 +300,9 @@ fun ReceiverScreen(onBack: () -> Unit) {
     }
 }
 
-/** 播放器式小按钮：胶囊、小字号、无多余内边距。 */
+private enum class PickerRow { None, Quality, FrameRate }
+
+/** 播放器式小按钮：胶囊、小字号、统一形状（不因文字长短变形）。 */
 @Composable
 private fun SmallButton(text: String, onClick: () -> Unit) {
     TextButton(
@@ -291,11 +355,21 @@ private fun SystemBarsEffect(hidden: Boolean) {
     }
 }
 
+/** 屏幕刷新率（帧率档位"跟随屏幕"要用它）。 */
+@Suppress("DEPRECATION")
+private fun android.content.Context.displayRefreshRateCompat(): Float =
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+        display?.refreshRate ?: 60f
+    } else {
+        val manager = getSystemService(android.content.Context.WINDOW_SERVICE) as? android.view.WindowManager
+        manager?.defaultDisplay?.refreshRate ?: 60f
+    }
+
 /**
  * 画面本体：渲染器 + 图层变换 + 手势。
  *
- * 变换走 graphicsLayer 的 lambda（绘制阶段读 State），捏合缩放不触发重组。
- * 点按与缩放分在两个 pointerInput：单指点是"显隐控制层"，多指才是缩放。
+ * 变换走 `graphicsLayer` 的 lambda（绘制阶段读 State），捏合缩放不触发重组。
+ * 点按与缩放分在两个 `pointerInput`：单指点是"显隐控制层"，多指才是缩放。
  */
 @Composable
 private fun VideoSurface(

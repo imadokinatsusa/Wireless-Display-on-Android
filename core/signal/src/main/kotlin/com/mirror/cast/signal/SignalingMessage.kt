@@ -32,6 +32,16 @@ sealed interface SignalingMessage {
         val candidate: String,
     ) : SignalingMessage
 
+    /**
+     * 接收端 → 发送端：换画质与帧率。
+     *
+     * 这是本项目唯一的"反向控制"：**只调发送端的编码参数**，不注入任何输入事件
+     * （把触摸注回发送端是 M2 的事）。之所以能这么做，是因为信令连接本来就双向。
+     *
+     * `quality` 传档位名（字符串），不传枚举 —— 信令层不依赖 app 层的类型。
+     */
+    data class QualityRequest(val quality: String, val frameRate: Int) : SignalingMessage
+
     /** 结束会话。 */
     data object Bye : SignalingMessage
 }
@@ -49,12 +59,18 @@ object SignalingCodec {
 
     private const val CANDIDATE_PREFIX = "CANDIDATE\t"
 
+    private const val QUALITY_PREFIX = "QUALITY\t"
+
     fun encode(message: SignalingMessage): ByteArray = when (message) {
         is SignalingMessage.Hello -> withHead("HELLO", message.code)
         is SignalingMessage.Offer -> withHead("OFFER", message.sdp)
         is SignalingMessage.Answer -> withHead("ANSWER", message.sdp)
         is SignalingMessage.Candidate ->
             withHead("$CANDIDATE_PREFIX${message.sdpMLineIndex}\t${message.sdpMid}", message.candidate)
+
+        is SignalingMessage.QualityRequest ->
+            withHead("$QUALITY_PREFIX${message.frameRate}", message.quality)
+
         SignalingMessage.Bye -> "BYE".toByteArray(Charsets.UTF_8)
     }
 
@@ -71,12 +87,19 @@ object SignalingCodec {
             head == "HELLO" -> SignalingMessage.Hello(body)
             head == "OFFER" -> SignalingMessage.Offer(body)
             head == "ANSWER" -> SignalingMessage.Answer(body)
+
+            head.startsWith(QUALITY_PREFIX) -> {
+                val fps = head.removePrefix(QUALITY_PREFIX).toIntOrNull() ?: return null
+                SignalingMessage.QualityRequest(quality = body, frameRate = fps)
+            }
+
             head.startsWith(CANDIDATE_PREFIX) -> {
                 val parts = head.split('\t')
                 if (parts.size != 3) return null
                 val lineIndex = parts[1].toIntOrNull() ?: return null
                 SignalingMessage.Candidate(sdpMid = parts[2], sdpMLineIndex = lineIndex, candidate = body)
             }
+
             else -> null
         }
     }

@@ -2,8 +2,10 @@ package com.mirror.cast.ui
 
 import android.Manifest
 import android.app.Activity
+import android.content.Context
 import android.media.projection.MediaProjectionManager
 import android.os.Build
+import android.view.WindowManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
@@ -46,14 +48,14 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 /**
- * 发送端：选画质 → 选连法 → 点一台接收端 → 系统授权 → 交给前台服务。
+ * 发送端：选画质与帧率 → 选连法 → 点一台接收端 → 系统授权 → 交给前台服务。
  *
- * 两种连法，随时可切（这就是「智能切换」）：
- * - 同一 Wi-Fi（默认）：最省事，但路由器开了 AP/客户端隔离时会搜不到设备；
- * - 发送端热点：由本机开一个"仅本地热点"，接收端连上来，链路必然互通；
- *   代价是两端都会失去外网。搜不到设备时界面会主动提示切过去。
+ * 两种连法随时可切：
+ * - **同一 Wi-Fi**（默认）：最省事，但路由器开了 AP/客户端隔离时会搜不到设备；
+ * - **发送端热点**：本机开一个"仅本地热点"，接收端连上来，链路必然互通（代价是没外网）。
  *
- * 画质档位调的是编码输出（分辨率 + 码率联动），采集始终是屏幕真实尺寸。
+ * 画质三件事说清楚：**采集**永远是屏幕真实尺寸；**编码**按档位缩放；
+ * **帧率**上限是屏幕刷新率（虚拟屏不会凭空多出帧）；**总码率**由档位与帧率共同决定。
  */
 @Composable
 fun SenderScreen(onBack: () -> Unit) {
@@ -64,6 +66,7 @@ fun SenderScreen(onBack: () -> Unit) {
     val active by SessionRegistry.active.collectAsState()
     var pending: DiscoveredDevice? by remember { mutableStateOf(null) }
     var quality by remember { mutableStateOf(CaptureSpec.DEFAULT_QUALITY) }
+    var frameTier by remember { mutableStateOf(CaptureSpec.DEFAULT_FRAME_RATE_TIER) }
     var autoQuality by remember { mutableStateOf(true) }
     val hotspot = remember(context) { HotspotController(context) }
     var hotspotInfo by remember { mutableStateOf<HotspotController.HotspotInfo?>(null) }
@@ -71,6 +74,11 @@ fun SenderScreen(onBack: () -> Unit) {
     var waitSeconds by remember { mutableIntStateOf(0) }
 
     val adjustable = active as? QualityAdjustable
+    val displayHz = remember { context.displayRefreshRate() }
+    val spec = remember { CaptureSpec.from(context.resources.displayMetrics) }
+    val fps = CaptureSpec.resolveFps(frameTier, displayHz)
+    val (encodeWidth, encodeHeight) = CaptureSpec.encodeSize(spec.width, spec.height, quality.maxLongEdge)
+    val totalBitRate = minOf(quality.maxBitrate, CaptureSpec.bitRateFor(encodeWidth, encodeHeight, fps))
 
     LaunchedEffect(Unit) {
         while (true) {
@@ -90,7 +98,6 @@ fun SenderScreen(onBack: () -> Unit) {
             SessionRegistry.set(FailedSession("你拒绝了屏幕授权"))
             return@rememberLauncherForActivityResult
         }
-        val spec = CaptureSpec.from(context.resources.displayMetrics)
         MirrorService.start(
             context = context,
             resultCode = result.resultCode,
@@ -100,6 +107,7 @@ fun SenderScreen(onBack: () -> Unit) {
             code = device.beacon.code,
             spec = spec,
             quality = quality,
+            frameRate = fps,
         )
     }
 
@@ -127,10 +135,12 @@ fun SenderScreen(onBack: () -> Unit) {
     ) {
         ScreenHeader(title = "发送屏幕", onBack = onBack)
 
-        Text(text = "画质（分辨率 + 码率联动）", style = MaterialTheme.typography.titleSmall)
-        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        // ── 画质 ──────────────────────────────────────────────────────────────
+        Text(text = "画质", style = MaterialTheme.typography.titleSmall)
+        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
             CaptureSpec.Quality.entries.forEach { item ->
                 Button(
+                    contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 10.dp),
                     onClick = {
                         quality = item
                         adjustable?.let { target -> scope.launch { target.setQuality(item) } }
@@ -140,6 +150,29 @@ fun SenderScreen(onBack: () -> Unit) {
                 }
             }
         }
+
+        // ── 帧率 ──────────────────────────────────────────────────────────────
+        Text(text = "帧率", style = MaterialTheme.typography.titleSmall)
+        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            CaptureSpec.FrameRateTier.entries.forEach { tier ->
+                Button(
+                    contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 10.dp),
+                    onClick = {
+                        frameTier = tier
+                        val target = CaptureSpec.resolveFps(tier, displayHz)
+                        adjustable?.let { session -> scope.launch { session.setFrameRate(target) } }
+                    },
+                ) {
+                    val label = if (tier == CaptureSpec.FrameRateTier.FollowDisplay) {
+                        "跟随屏幕(${displayHz.toInt()}Hz)"
+                    } else {
+                        tier.label
+                    }
+                    Text(if (tier == frameTier) "● $label" else label)
+                }
+            }
+        }
+
         Row(verticalAlignment = Alignment.CenterVertically) {
             Switch(
                 checked = autoQuality,
@@ -149,29 +182,43 @@ fun SenderScreen(onBack: () -> Unit) {
                 },
             )
             Text(
-                text = "按网络状况自动切换画质（丢包/延迟变差就降档，网络好转再升回来）",
+                text = "按网络自动切换画质",
                 style = MaterialTheme.typography.bodySmall,
             )
         }
 
+        // ── 参数说明：画质 / 帧率 / 总码率 ────────────────────────────────────
+        Text(
+            text = buildString {
+                appendLine("采集 ${spec.width}×${spec.height}（屏幕真实尺寸，不可缩放）")
+                appendLine("编码 ${encodeWidth}×${encodeHeight} @${fps}fps")
+                appendLine("画质 ${quality.label}（档位码率上限 ${quality.maxBitrate / 1_000_000}Mbps）")
+                append("总码率 约 ${"%.1f".format(totalBitRate / 1_000_000.0)}Mbps")
+                if (frameTier == CaptureSpec.FrameRateTier.FollowDisplay) {
+                    append("（帧率上限 = 本机屏幕 ${displayHz.toInt()}Hz）")
+                }
+            },
+            style = MaterialTheme.typography.bodySmall,
+            fontFamily = FontFamily.Monospace,
+        )
+
+        // ── 连法 ──────────────────────────────────────────────────────────────
         Text(text = "连接方式", style = MaterialTheme.typography.titleSmall)
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Button(
-                onClick = {
-                    if (hotspot.running) {
-                        hotspot.stop()
-                        hotspotInfo = null
-                        hotspotError = null
-                    } else {
-                        hotspot.start { info, error ->
-                            hotspotInfo = info
-                            hotspotError = error
-                        }
+        Button(
+            onClick = {
+                if (hotspot.running) {
+                    hotspot.stop()
+                    hotspotInfo = null
+                    hotspotError = null
+                } else {
+                    hotspot.start { info, error ->
+                        hotspotInfo = info
+                        hotspotError = error
                     }
-                },
-            ) {
-                Text(if (hotspot.running) "关闭热点，回到同一 Wi-Fi" else "开热点（没有共同 Wi-Fi 时用）")
-            }
+                }
+            },
+        ) {
+            Text(if (hotspot.running) "关闭热点，回到同一 Wi-Fi" else "开热点（没有共同 Wi-Fi 时用）")
         }
         hotspotInfo?.let { info ->
             Text(
@@ -193,6 +240,7 @@ fun SenderScreen(onBack: () -> Unit) {
             Text(text = "热点启动失败：$error", style = MaterialTheme.typography.bodySmall)
         }
 
+        // ── 设备 ──────────────────────────────────────────────────────────────
         Text(text = "接收端设备", style = MaterialTheme.typography.titleSmall)
         val found = devices.values.sortedBy { it.beacon.deviceName }
         if (found.isEmpty()) {
@@ -218,6 +266,7 @@ fun SenderScreen(onBack: () -> Unit) {
             }
         }
 
+        // ── 当前会话 ──────────────────────────────────────────────────────────
         active?.let { session ->
             val diagnostics by session.diagnostics.collectAsState()
             DiagnosticsBar(text = diagnostics.line())
@@ -230,3 +279,15 @@ fun SenderScreen(onBack: () -> Unit) {
         }
     }
 }
+
+/** 屏幕刷新率 —— 采集帧率的物理上限。 */
+@Suppress("DEPRECATION")
+private fun Context.displayRefreshRate(): Float =
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+        display?.refreshRate ?: DEFAULT_HZ
+    } else {
+        val manager = getSystemService(Context.WINDOW_SERVICE) as? WindowManager
+        manager?.defaultDisplay?.refreshRate ?: DEFAULT_HZ
+    }
+
+private const val DEFAULT_HZ = 60f

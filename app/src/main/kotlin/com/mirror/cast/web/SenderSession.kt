@@ -50,8 +50,8 @@ import kotlin.coroutines.resume
  * - ICE 候选由回调线程推入队列，再由协程搬给信令连接。
  *
  * 画质分两层：**采集尺寸锁在屏幕真实尺寸**（Android 14 的要求），可调的是
- * **编码输出**（分辨率 + 码率联动）。开启自动画质后，会根据 `getStats` 的
- * 丢包率与往返时延自动升降档 —— 网络差就降，网络好了再升回来。
+ * **编码输出**（分辨率 + 码率 + 帧率）。三件事都能被两方调整：
+ * 发送端本机的界面，以及接收端发来的 [SignalingMessage.QualityRequest]。
  */
 class SenderSession(
     private val context: Context,
@@ -62,6 +62,7 @@ class SenderSession(
     private val signalingPort: Int,
     private val code: String,
     initialQuality: CaptureSpec.Quality = CaptureSpec.DEFAULT_QUALITY,
+    initialFrameRate: Int = CaptureSpec.DEFAULT_FRAME_RATE,
 ) : CastSession, QualityAdjustable {
 
     private val _state = MutableStateFlow<SessionState>(SessionState.Connecting("$host:$signalingPort"))
@@ -94,6 +95,9 @@ class SenderSession(
     private var qualityValue: CaptureSpec.Quality = initialQuality
 
     @Volatile
+    private var frameRateValue: Int = initialFrameRate
+
+    @Volatile
     private var autoQualityValue: Boolean = true
 
     @Volatile
@@ -107,6 +111,8 @@ class SenderSession(
     private var healthyStreak = 0
 
     override val quality: CaptureSpec.Quality get() = qualityValue
+
+    override val frameRate: Int get() = frameRateValue
 
     override val autoQuality: Boolean get() = autoQualityValue
 
@@ -230,7 +236,7 @@ class SenderSession(
             throw IllegalStateException("发送会话描述失败：${error.message}")
         }
 
-        // ── 6) 等 answer / 候选 ───────────────────────────────────────────────
+        // ── 6) 等 answer / 候选 / 接收端的画质请求 ─────────────────────────────
         signaling.incoming.collect { message ->
             when (message) {
                 is SignalingMessage.Answer -> runtime.onSignaling {
@@ -243,6 +249,17 @@ class SenderSession(
                     connection.addIceCandidate(
                         IceCandidate(message.sdpMid, message.sdpMLineIndex, message.candidate),
                     )
+                }
+
+                // 接收端在看画面，由它决定清晰度/流畅度更合理
+                is SignalingMessage.QualityRequest -> {
+                    _diagnostics.update {
+                        it.copy(state = "接收端请求：${message.quality} / ${message.frameRate}fps")
+                    }
+                    runCatching {
+                        setQuality(CaptureSpec.qualityOf(message.quality))
+                        setFrameRate(message.frameRate)
+                    }
                 }
 
                 SignalingMessage.Bye -> {
@@ -268,14 +285,14 @@ class SenderSession(
         val textureHelper = SurfaceTextureHelper.create("mirror-capture", runtime.eglContext)
         runtime.onSignaling {
             created.initialize(textureHelper, context, source.capturerObserver)
-            created.startCapture(spec.width, spec.height, CaptureSpec.FRAME_RATE)
+            created.startCapture(spec.width, spec.height, frameRateValue)
             // 采集仍是屏幕真实尺寸，编码输出按档位缩放 —— 帧率就是这么换回来的
-            source.adaptOutputFormat(encodeWidth, encodeHeight, CaptureSpec.FRAME_RATE)
+            source.adaptOutputFormat(encodeWidth, encodeHeight, frameRateValue)
         }
         capturer = created
     }
 
-    // ── 画质：档位 + 自适应 ────────────────────────────────────────────────────
+    // ── 画质与帧率：档位 + 自适应 + 接收端请求 ──────────────────────────────────
 
     private fun currentEncodeSize(): Pair<Int, Int> =
         CaptureSpec.encodeSize(spec.width, spec.height, qualityValue.maxLongEdge)
@@ -284,18 +301,18 @@ class SenderSession(
      * 把当前档位写进编码器参数。
      *
      * **必须在 signaling 线程调用**（调用点都在 [WebRtcRuntime.onSignaling] 里）。
-     * 码率取"档位上限"与"按分辨率估算"的较小值：两个约束都要满足。
+     * 码率取"档位上限"与"按分辨率与帧率估算"的较小值：两个约束都要满足。
      */
     private fun applyVideoParams() {
         val sender = videoSender ?: return
         val (width, height) = currentEncodeSize()
-        val bitRate = minOf(qualityValue.maxBitrate, CaptureSpec.bitRateFor(width, height))
+        val bitRate = minOf(qualityValue.maxBitrate, CaptureSpec.bitRateFor(width, height, frameRateValue))
         runCatching {
             val params = sender.parameters
             params.degradationPreference = RtpParameters.DegradationPreference.MAINTAIN_FRAMERATE
             params.encodings.forEach { encoding ->
                 encoding.maxBitrateBps = bitRate
-                encoding.maxFramerate = CaptureSpec.FRAME_RATE
+                encoding.maxFramerate = frameRateValue
             }
             sender.setParameters(params)
         }
@@ -307,7 +324,18 @@ class SenderSession(
         val source = videoSource ?: return false
         val (width, height) = currentEncodeSize()
         runtime.onSignaling {
-            source.adaptOutputFormat(width, height, CaptureSpec.FRAME_RATE)
+            source.adaptOutputFormat(width, height, frameRateValue)
+            applyVideoParams()
+        }
+        return true
+    }
+
+    override suspend fun setFrameRate(fps: Int): Boolean {
+        frameRateValue = fps.coerceIn(1, CaptureSpec.MAX_FRAME_RATE)
+        val source = videoSource ?: return false
+        val (width, height) = currentEncodeSize()
+        runtime.onSignaling {
+            source.adaptOutputFormat(width, height, frameRateValue)
             applyVideoParams()
         }
         return true
@@ -325,7 +353,7 @@ class SenderSession(
     private fun reportResolution(width: Int, height: Int, bitRate: Int) {
         _diagnostics.update {
             it.copy(
-                resolution = "${spec.width}×${spec.height} → ${width}×${height} @${CaptureSpec.FRAME_RATE}fps / " +
+                resolution = "${spec.width}×${spec.height} → ${width}×${height} @${frameRateValue}fps / " +
                     "${bitRate / 1_000_000}.${(bitRate % 1_000_000) / 100_000}Mbps · ${qualityValue.label}",
             )
         }
@@ -415,7 +443,7 @@ class SenderSession(
      * 判据（都来自实测统计，不猜）：
      * - 拥塞：丢包 > 6% 或 RTT > 250ms，**连续两次**才降档（防抖）；
      * - 良好：丢包 < 1% 且 RTT < 120ms，**连续六次**（约 12 秒）才升档；
-     * - 从不自动升到「原始」：那个档位最吃算力，自动升上去反而容易卡。
+     * - 从不自动升到「原画」：那个档位最吃算力，自动升上去反而容易卡。
      */
     private suspend fun maybeSwitchQuality(fractionLost: Double, roundTripMs: Double) {
         val tiers = CaptureSpec.Quality.entries
@@ -431,9 +459,7 @@ class SenderSession(
                     congestedStreak = 0
                     val next = tiers[index + 1]
                     setQuality(next)
-                    _diagnostics.update {
-                        it.copy(state = "网络拥塞，自动降到「${next.label}」")
-                    }
+                    _diagnostics.update { it.copy(state = "网络拥塞，自动降到「${next.label}」") }
                 }
             }
 
@@ -444,9 +470,7 @@ class SenderSession(
                     healthyStreak = 0
                     val next = tiers[index - 1]
                     setQuality(next)
-                    _diagnostics.update {
-                        it.copy(state = "网络良好，自动升到「${next.label}」")
-                    }
+                    _diagnostics.update { it.copy(state = "网络良好，自动升到「${next.label}」") }
                 }
             }
 

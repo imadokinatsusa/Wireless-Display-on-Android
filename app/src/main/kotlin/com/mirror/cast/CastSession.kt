@@ -36,6 +36,12 @@ interface QualityAdjustable {
 
     suspend fun setAutoQuality(enabled: Boolean)
 
+    /** 当前帧率（fps）。 */
+    val frameRate: Int
+
+    /** 换帧率（接收端也能通过反向请求触发）。 */
+    suspend fun setFrameRate(fps: Int): Boolean
+
     /** 最近一次的网络观测值（丢包率 0..1、往返时延毫秒、估算码率 kbps）。 */
     val linkStats: LinkStats
 }

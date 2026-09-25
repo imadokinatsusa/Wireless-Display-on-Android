@@ -34,7 +34,8 @@ import org.webrtc.VideoTrack
  * - 发送端停下来之后，只释放这一个连接、**回去继续等下一个**，而不是把自己关掉；
  * - 真正的"停止"只发生在界面退出时（[shutdown]）。
  *
- * 声音由媒体栈直接播放 —— 这正是引入 libwebrtc 的收益：不用自己写播放与抖动缓冲。
+ * 它还承担一件"反向"的事：画质与帧率是发送端的编码参数，但用户是在**看画面这台设备**
+ * 上做决定，所以接收端通过信令连接把 [SignalingMessage.QualityRequest] 发回去。
  */
 class ReceiverSession(
     private val runtime: WebRtcRuntime,
@@ -66,6 +67,13 @@ class ReceiverSession(
     var signalingPort: Int = 0
         private set
 
+    /** 当前生效（或最近请求）的画质档位名与帧率，用于界面回显。 */
+    @Volatile
+    var requestedQuality: String = ""
+
+    @Volatile
+    var requestedFrameRate: Int = 0
+
     /** 开始监听，返回实际端口。 */
     suspend fun prepare(): Int {
         val port = server.start(0)
@@ -83,6 +91,19 @@ class ReceiverSession(
         }
         renderer = view
         remoteVideo?.let { track -> runCatching { track.addSink(view) } }
+    }
+
+    /**
+     * 请求发送端换画质/帧率。
+     *
+     * 走的是已经建立的信令连接（本来就双向），所以不需要任何额外的控制通道。
+     * 失败（还没连上）时返回 false，界面据此提示"尚未连接"。
+     */
+    suspend fun requestQuality(qualityName: String, fps: Int): Boolean {
+        requestedQuality = qualityName
+        requestedFrameRate = fps
+        val target = channel ?: return false
+        return target.send(SignalingMessage.QualityRequest(quality = qualityName, frameRate = fps)).isSuccess
     }
 
     fun start(scope: CoroutineScope) {
