@@ -26,6 +26,7 @@ import org.webrtc.AudioTrack
 import org.webrtc.IceCandidate
 import org.webrtc.MediaConstraints
 import org.webrtc.PeerConnection
+import org.webrtc.RtpParameters
 import org.webrtc.SessionDescription
 import org.webrtc.SurfaceTextureHelper
 import org.webrtc.VideoSource
@@ -161,10 +162,27 @@ class SenderSession(
                 bundlePolicy = PeerConnection.BundlePolicy.MAXBUNDLE
                 rtcpMuxPolicy = PeerConnection.RtcpMuxPolicy.REQUIRE
                 continualGatheringPolicy = PeerConnection.ContinualGatheringPolicy.GATHER_ONCE
+                // 屏幕内容场景关掉 CPU 过载检测：它按摄像头场景调优，投屏时只会白白降帧
+                enableCpuOveruseDetection = false
+                // 投屏下限码率：太低会让文字糊成一团
+                screencastMinBitrate = MIN_SCREENCAST_BITRATE
+                // 抖动缓冲调小：默认 50 包（约 1 秒）对实时投屏太滞后
+                audioJitterBufferMaxPackets = AUDIO_JITTER_BUFFER_PACKETS
+                audioJitterBufferFastAccelerate = true
             }
             val created = factory.createPeerConnection(config, observer)
                 ?: error("创建 PeerConnection 失败")
-            created.addTrack(newVideoTrack, listOf(STREAM_ID))
+            val videoSender = created.addTrack(newVideoTrack, listOf(STREAM_ID))
+            // 保帧率优先：屏幕内容宁可分辨率降一点，也不要卡顿
+            runCatching {
+                val params = videoSender.parameters
+                params.degradationPreference = RtpParameters.DegradationPreference.MAINTAIN_FRAMERATE
+                params.encodings.forEach { encoding ->
+                    encoding.maxBitrateBps = spec.bitRate
+                    encoding.maxFramerate = CaptureSpec.FRAME_RATE
+                }
+                videoSender.setParameters(params)
+            }
             created.addTrack(newAudioTrack, listOf(STREAM_ID))
 
             videoSource = newVideoSource
@@ -218,11 +236,14 @@ class SenderSession(
 
     private suspend fun startCapture() {
         val source = videoSource ?: error("视频源尚未就绪")
+        val (encodeWidth, encodeHeight) = CaptureSpec.encodeSize(spec.width, spec.height)
         val created = ProjectionVideoCapturer(projection, spec.densityDpi)
         val textureHelper = SurfaceTextureHelper.create("mirror-capture", runtime.eglContext)
         runtime.onSignaling {
             created.initialize(textureHelper, context, source.capturerObserver)
             created.startCapture(spec.width, spec.height, CaptureSpec.FRAME_RATE)
+            // 采集仍是屏幕真实尺寸，编码输出压到长边 1920 —— 帧率就是这么换回来的
+            source.adaptOutputFormat(encodeWidth, encodeHeight, CaptureSpec.FRAME_RATE)
         }
         capturer = created
 

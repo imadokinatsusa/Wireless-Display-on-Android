@@ -3,18 +3,22 @@ package com.mirror.cast.ui
 import android.app.Activity
 import android.os.Build
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.Button
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -27,6 +31,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
@@ -40,6 +45,7 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import com.mirror.cast.Broadcaster
 import com.mirror.cast.MirrorApplication
+import com.mirror.cast.SessionState
 import com.mirror.cast.discovery.ConnectCode
 import com.mirror.cast.web.ReceiverSession
 import kotlinx.coroutines.delay
@@ -49,15 +55,17 @@ import org.webrtc.SurfaceViewRenderer
 /**
  * 接收端：亮出连接码 → 等发送端来连 → 像看视频一样看画面。
  *
- * 交互照播放器来（控制层可显隐、底部控制条、沉浸全屏）：
- * - **点画面**切换控制层；全屏时 3 秒无操作自动淡出；
- * - 底部控制条：全屏/窗口、适应/填充、复位、当前缩放倍率；
- * - **双指缩放 + 单指拖动**看细节；
- * - 全屏时隐藏系统栏，退出时恢复。
+ * 交互照播放器来：
+ * - **一开始投屏就自动进全屏、并且不显示任何按钮**（最沉浸的状态）；
+ * - **点画面**唤出/收起控制层，全屏时 3 秒无操作自动淡出；
+ * - 控制层是**磨砂玻璃**质感（半透明深色 + 圆角 + 细描边）；
+ * - 双指缩放（1×–6×）+ 单指拖动看细节；
+ * - 退出用 [ReceiverSession.shutdown]（会话自带 scope），
+ *   不用 `rememberCoroutineScope` —— 它随 composable 销毁被取消，
+ *   那样 Bye 发不出去，就成了"接收端已退出、发送端还显示投屏中"。
  *
- * 退出时用 [ReceiverSession.shutdown]（会话自带的独立 scope）收尾，
- * 不用 `rememberCoroutineScope` —— 那个 scope 会随 composable 销毁被取消，
- * 结果就是"接收端已经退出、发送端还显示投屏中"（这正是上一个 bug）。
+ * 旋转屏幕不会断开：Activity 声明了 configChanges（见 AndroidManifest），
+ * 旋转不重建、会话与画面都留在原地。
  */
 @Composable
 fun ReceiverScreen(onBack: () -> Unit) {
@@ -85,11 +93,21 @@ fun ReceiverScreen(onBack: () -> Unit) {
     var fillScreen by remember { mutableStateOf(false) }
     var controlsVisible by remember { mutableStateOf(true) }
 
+    val state by session.state.collectAsState()
+
     LaunchedEffect(session) {
         // 先把监听端口准备好，再开始广播连接码 —— 否则对端拿到的是无效端口
         session.prepare()
         broadcaster.start()
         session.start(scope)
+    }
+
+    // ★ 一开始投屏：自动全屏、收起按钮
+    LaunchedEffect(state) {
+        if (state is SessionState.Streaming) {
+            fullscreen = true
+            controlsVisible = false
+        }
     }
 
     LaunchedEffect(fillScreen) {
@@ -102,7 +120,7 @@ fun ReceiverScreen(onBack: () -> Unit) {
         )
     }
 
-    // 播放器手感：全屏时控制层自动淡出，点一下再出来
+    // 播放器手感：全屏且控制层可见时，3 秒后自动淡出
     LaunchedEffect(controlsVisible, fullscreen) {
         if (fullscreen && controlsVisible) {
             delay(3_000)
@@ -118,7 +136,6 @@ fun ReceiverScreen(onBack: () -> Unit) {
             session.detachRenderer()
             renderer?.let { view -> runCatching { view.release() } }
             renderer = null
-            // ★ 用会话自己的收尾 scope：界面 scope 此刻正在被取消，用它发不出 Bye
             session.shutdown()
         }
     }
@@ -144,69 +161,103 @@ fun ReceiverScreen(onBack: () -> Unit) {
                 .clipToBounds(),
         )
 
-        if (!fullscreen) {
-            Column(
+        // 还没开始投屏时才显示连接码，开始投屏后一切让位给画面
+        if (state !is SessionState.Streaming) {
+            GlassPanel(
                 modifier = Modifier
-                    .align(Alignment.TopStart)
-                    .fillMaxWidth()
-                    .background(Color(0xCC000000))
-                    .padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp),
+                    .align(Alignment.TopCenter)
+                    .fillMaxWidth(),
             ) {
-                ConnectCodeDisplay(code = ConnectCode.pretty(code))
                 Text(
-                    text = "在发送端选择「$deviceName」开始投屏；点画面可显隐控制条。",
-                    style = MaterialTheme.typography.bodySmall,
+                    text = "连接码",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = Color(0xFFB0B0B0),
+                )
+                Text(
+                    text = ConnectCode.pretty(code),
+                    style = MaterialTheme.typography.headlineMedium,
+                    fontFamily = FontFamily.Monospace,
                     color = Color.White,
+                )
+                Text(
+                    text = "在发送端选择「$deviceName」；本机 IP 可在系统设置里查看。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color(0xFFB0B0B0),
                 )
             }
         }
 
         if (controlsVisible) {
-            Row(
+            GlassPanel(
                 modifier = Modifier
-                    .align(Alignment.TopEnd)
-                    .padding(12.dp),
+                    .align(Alignment.TopStart)
+                    .padding(top = 8.dp),
             ) {
-                Button(onClick = { if (fullscreen) fullscreen = false else onBack() }) {
-                    Text(if (fullscreen) "退出全屏" else "← 返回")
+                TextButton(
+                    onClick = { if (fullscreen) fullscreen = false else onBack() },
+                ) {
+                    Text(text = if (fullscreen) "↙ 退出全屏" else "← 返回", color = Color.White)
                 }
             }
 
-            Column(
+            GlassPanel(
                 modifier = Modifier
-                    .align(Alignment.BottomStart)
-                    .fillMaxWidth()
-                    .background(Color(0xCC000000))
-                    .padding(12.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth(),
             ) {
                 Row(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Button(onClick = { fullscreen = !fullscreen }) {
-                        Text(if (fullscreen) "窗口" else "全屏")
+                    TextButton(onClick = { fullscreen = !fullscreen }) {
+                        Text(text = if (fullscreen) "▣ 窗口" else "⛶ 全屏", color = Color.White)
                     }
-                    Button(onClick = { fillScreen = !fillScreen }) {
-                        Text(if (fillScreen) "填充" else "适应")
+                    TextButton(onClick = { fillScreen = !fillScreen }) {
+                        Text(text = if (fillScreen) "◱ 填充" else "◱ 适应", color = Color.White)
                     }
-                    Button(onClick = reset) { Text("复位") }
+                    TextButton(onClick = reset) {
+                        Text(text = "⟲ 复位", color = Color.White)
+                    }
+                    Spacer(modifier = Modifier.weight(1f))
                     Text(
                         text = "%.1f×".format(zoomState.value),
                         style = MaterialTheme.typography.bodySmall,
-                        color = Color.White,
+                        color = Color(0xFFB0B0B0),
                     )
                 }
                 Text(
                     text = diagnostics.line(),
                     style = MaterialTheme.typography.bodySmall,
                     fontFamily = FontFamily.Monospace,
-                    color = Color.White,
+                    color = Color(0xFFB0B0B0),
                 )
             }
         }
     }
+}
+
+/**
+ * 磨砂玻璃面板：半透明深色 + 圆角 + 细描边。
+ *
+ * 真正的背景模糊需要 API 31+ 且对 SurfaceView（独立图层）无效，
+ * 所以这里用"半透明 + 圆角 + 亮边"来做出同样的观感。
+ */
+@Composable
+private fun GlassPanel(
+    modifier: Modifier = Modifier,
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    val shape = RoundedCornerShape(18.dp)
+    Column(
+        modifier = modifier
+            .padding(horizontal = 12.dp, vertical = 10.dp)
+            .clip(shape)
+            .background(Color(0xB3121212))
+            .border(1.dp, Color(0x22FFFFFF), shape)
+            .padding(horizontal = 14.dp, vertical = 10.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+        content = content,
+    )
 }
 
 /** 全屏时隐藏系统栏（沉浸），退出时恢复。 */
@@ -230,8 +281,8 @@ private fun SystemBarsEffect(hidden: Boolean) {
 /**
  * 画面本体：渲染器 + 图层变换 + 手势。
  *
- * 变换走 `graphicsLayer` 的 lambda（绘制阶段读取 State），捏合缩放不会触发重组。
- * 点按与缩放手势放在两个 `pointerInput` 里：单指点是"显隐控制条"，多指才是缩放。
+ * 变换走 `graphicsLayer` 的 lambda（绘制阶段读 State），捏合缩放不触发重组。
+ * 点按与缩放分在两个 `pointerInput`：单指点是"显隐控制层"，多指才是缩放。
  */
 @Composable
 private fun VideoSurface(

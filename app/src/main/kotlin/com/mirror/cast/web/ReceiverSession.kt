@@ -203,6 +203,9 @@ class ReceiverSession(
                 bundlePolicy = PeerConnection.BundlePolicy.MAXBUNDLE
                 rtcpMuxPolicy = PeerConnection.RtcpMuxPolicy.REQUIRE
                 continualGatheringPolicy = PeerConnection.ContinualGatheringPolicy.GATHER_ONCE
+                // 抖动缓冲调小：默认 50 包（约 1 秒）会让声音明显滞后、看着不同步
+                audioJitterBufferMaxPackets = 12
+                audioJitterBufferFastAccelerate = true
             }
             factory.createPeerConnection(config, observer) ?: error("创建 PeerConnection 失败")
         }

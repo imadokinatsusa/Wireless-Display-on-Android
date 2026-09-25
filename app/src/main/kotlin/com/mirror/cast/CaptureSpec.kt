@@ -21,6 +21,9 @@ object CaptureSpec {
 
     private const val MAX_BIT_RATE = 24_000_000
 
+    /** 编码输出的长边上限：全尺寸编码会把中端机帧率压死。 */
+    private const val MAX_ENCODE_LONG_EDGE = 1920
+
     data class Spec(
         val width: Int,
         val height: Int,
@@ -41,6 +44,21 @@ object CaptureSpec {
             bitRate = bitRateFor(width, height),
         )
     }
+
+    /**
+     * 编码尺寸：长边不超过 maxLongEdge，并 16 对齐。
+     *
+     * 虚拟屏尺寸仍用屏幕真实尺寸（Android 14 单应用共享的要求），
+     * 这里只压编码输出 —— 算力就是在这儿省下来的，帧率也是。
+     */
+    fun encodeSize(sourceWidth: Int, sourceHeight: Int, maxLongEdge: Int = MAX_ENCODE_LONG_EDGE): Pair<Int, Int> {
+        val longEdge = maxOf(sourceWidth, sourceHeight)
+        if (longEdge <= maxLongEdge) return align(sourceWidth) to align(sourceHeight)
+        val scale = maxLongEdge.toDouble() / longEdge
+        return align((sourceWidth * scale).toInt()) to align((sourceHeight * scale).toInt())
+    }
+
+    private fun align(value: Int): Int = maxOf(ALIGNMENT, value / ALIGNMENT * ALIGNMENT)
 
     fun bitRateFor(width: Int, height: Int, frameRate: Int = FRAME_RATE): Int {
         // 末尾的 toLong() 不能省：Long * Double 会被推成 Double，
