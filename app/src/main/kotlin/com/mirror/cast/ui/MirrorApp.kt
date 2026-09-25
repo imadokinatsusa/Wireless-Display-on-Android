@@ -17,7 +17,7 @@ private enum class MirrorScreen { Home, Sender, Receiver }
 fun MirrorApp(lastCrash: String?) {
     var screen by remember { mutableStateOf(MirrorScreen.Home) }
 
-    MaterialTheme {
+    MirrorTheme {
         Surface(modifier = Modifier.fillMaxSize()) {
             when (screen) {
                 MirrorScreen.Home -> HomeScreen(
