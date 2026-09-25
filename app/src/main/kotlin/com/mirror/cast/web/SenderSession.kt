@@ -200,7 +200,11 @@ class SenderSession(
                 // 标定两台设备的钟差 —— 端到端延迟测量全靠它
                 scope?.launch { calibrateClock() }
             },
-            onFailed = { reason -> fail("$reason（本机 ${LocalAddress.summary()}）") },
+            onFailed = { reason ->
+                // 报错带上**目标地址**：这样"连接被拒绝"能一眼看出是打到了错的端口，
+                // 还是对方根本没在听
+                fail("$reason（目标 $host:$signalingPort，本机 ${LocalAddress.summary()}）")
+            },
             onRemoteVideo = { /* 发送端不接收画面 */ },
         )
 

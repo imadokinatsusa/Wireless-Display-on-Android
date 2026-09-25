@@ -336,7 +336,12 @@ class ReceiverSession(
     private fun fail(reason: String) {
         _state.value = SessionState.Failed(reason)
         _diagnostics.update { it.copy(state = "失败：$reason") }
-        scope?.launch { stop() }
+        // ⚠️ 只释放**这一个对端**，绝不关监听。
+        //
+        // 接收端是"守在那里"的一方：一次会话没谈成（比如 ICE 失败）不代表它该退休。
+        // 而 `stop()` 里会 `server.close()` —— 监听一关，对方之后再来连就只会收到
+        // **"连接被拒绝"**，而从界面上完全看不出原因（踩过）。
+        scope?.launch { releasePeer() }
     }
 
     /**

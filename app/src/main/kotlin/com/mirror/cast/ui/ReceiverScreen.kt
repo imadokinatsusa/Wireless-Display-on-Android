@@ -6,6 +6,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.provider.Settings
+import android.view.WindowManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.animateDpAsState
@@ -616,6 +617,10 @@ private fun SystemBarsEffect(hidden: Boolean) {
     DisposableEffect(hidden) {
         val window = (view.context as? Activity)?.window
         val controller = window?.let { WindowInsetsControllerCompat(it, view) }
+        // 接收端要一直守着 TCP 监听等人来连。屏幕一熄，MIUI 这类系统就可能把它的
+        // 网络掐掉、甚至回收进程 —— 之后对方扫码收到的就是"连接被拒绝"。
+        // 所以这一页刻意保持常亮。
+        window?.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         if (hidden) {
             // 只隐藏**状态栏**，刻意保留导航栏：两台设备屏幕比例不同时，
             // 画面等比缩放后底下必然空出一块 —— 留着导航栏，那块就不是死黑，
@@ -626,7 +631,10 @@ private fun SystemBarsEffect(hidden: Boolean) {
         } else {
             controller?.show(WindowInsetsCompat.Type.systemBars())
         }
-        onDispose { controller?.show(WindowInsetsCompat.Type.systemBars()) }
+        onDispose {
+            controller?.show(WindowInsetsCompat.Type.systemBars())
+            window?.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        }
     }
 }
 
