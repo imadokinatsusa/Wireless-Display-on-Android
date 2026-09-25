@@ -4,6 +4,8 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.net.wifi.WifiManager
 import android.net.wifi.WpsInfo
 import android.net.wifi.p2p.WifiP2pConfig
@@ -33,6 +35,13 @@ data class P2pStatus(
     val groupOwnerAddress: String? = null,
     /** 本机是不是这个 P2P 组的群主（也就是"临时小 AP"那一台）。 */
     val isGroupOwner: Boolean = false,
+    /**
+     * 本进程的网络有没有成功绑到这条 P2P 链路上。
+     *
+     * **这一点决定了媒体能不能通**：Android 上 Wi-Fi Direct 建出来的网络
+     * 默认不属于任何 App，媒体栈枚举网络时看不到它就收集不到候选地址。
+     */
+    val boundToGroup: Boolean = false,
     /** 给人看的一句话状态或失败原因（真机没有 adb，这是唯一的出口）。 */
     val message: String? = null,
 )
@@ -194,6 +203,47 @@ class WifiP2pLink(private val context: Context) {
     }
 
     /**
+     * 把本进程的网络**绑定到这条 Wi-Fi Direct 链路**上。
+     *
+     * **为什么非做不可**：Android 上 Wi-Fi Direct 建出来的网络**默认不属于任何 App** ——
+     * 系统把它建好了，但要让它被某个 App 使用，得由 App 主动申请。
+     *
+     * 我们自己的信令 Socket 靠"同网段直连路由"就能通，所以从信令上看一切正常；
+     * 可**媒体栈（WebRTC）是靠枚举 `ConnectivityManager` 的网络来收集候选地址的** ——
+     * 看不到这条链路，候选里就没有 `192.168.49.x`，两端于是永远停在"连接中"（踩过）。
+     *
+     * 绑定之后 WebRTC 才能看见并使用这条链路。返回是否绑定成功，界面据此显示进展。
+     */
+    fun bindToGroup(): Boolean {
+        val manager = context.applicationContext
+            .getSystemService(ConnectivityManager::class.java) ?: return false
+        val groupOwnerNow = _status.value.groupOwnerAddress
+        val target = manager.allNetworks.firstOrNull { network ->
+            val capabilities = manager.getNetworkCapabilities(network) ?: return@firstOrNull false
+            if (!capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) {
+                return@firstOrNull false
+            }
+            val link = manager.getLinkProperties(network) ?: return@firstOrNull false
+            // 优先认接口名（p2p0 / p2p-wlan0-0），认不出来就靠群主地址对
+            link.interfaceName?.startsWith("p2p") == true ||
+                (groupOwnerNow != null &&
+                    link.linkAddresses.any { it.address.hostAddress == groupOwnerNow })
+        } ?: return false
+
+        val bound = runCatching { manager.bindProcessToNetwork(target) }.getOrDefault(false)
+        _status.update { it.copy(boundToGroup = bound) }
+        return bound
+    }
+
+    /** 解绑，把流量还给系统默认网络。 */
+    fun unbind() {
+        val manager = context.applicationContext
+            .getSystemService(ConnectivityManager::class.java) ?: return
+        runCatching { manager.bindProcessToNetwork(null) }
+        _status.update { it.copy(boundToGroup = false) }
+    }
+
+    /**
      * 清掉可能残留的 P2P 组 —— 进程被强杀时留下的那种。
      *
      * 为什么要它：Wi-Fi Direct 的组是**系统级、跨进程**的。App 被划掉或被系统清理时，
@@ -212,6 +262,8 @@ class WifiP2pLink(private val context: Context) {
 
     /** 拆组并注销广播。 */
     fun stop() {
+        // 先解绑，再拆组 —— 顺序反了的话，拆完组那个 Network 就找不到了
+        unbind()
         val wifiP2p = manager
         val current = channel
         if (wifiP2p != null && current != null) {
@@ -254,10 +306,29 @@ class WifiP2pLink(private val context: Context) {
                             groupOwnerAddress = address,
                             isGroupOwner = info.isGroupOwner,
                             searching = false,
-                            message = if (info.isGroupOwner) {
-                                "已建组，本机是群主（$address）· 再点一次可拆"
-                            } else {
-                                "已加入对方的组（群主 $address）"
+                        )
+                    }
+                    // 链路一成就把它接管给本进程 —— 少这一步，媒体栈看不见这条链路：
+                    // 信令能通（自己写的 Socket 走直连路由），画面却永远起不来。
+                    val bound = bindToGroup()
+                    _status.update {
+                        it.copy(
+                            message = buildString {
+                                append(
+                                    if (info.isGroupOwner) {
+                                        "已建组，本机是群主（$address）"
+                                    } else {
+                                        "已加入对方的组（群主 $address）"
+                                    },
+                                )
+                                append(
+                                    if (bound) {
+                                        " · 已接管链路"
+                                    } else {
+                                        " · ⚠️ 链路接管失败，画面可能起不来"
+                                    },
+                                )
+                                if (info.isGroupOwner) append(" · 再点一次可拆")
                             },
                         )
                     }
