@@ -349,8 +349,7 @@ fun SenderContent(lastCrash: String? = null) {
                         icon = Icons.Filled.PhoneAndroid,
                         iconTint = ColorGray,
                         title = "等待设备",
-                        subtitle = "在另一台设备上打开本应用、切到「接收」页就行" +
-                            "（本机 ${discovery.lastScanTarget ?: LocalAddress.summary()}）",
+                        subtitle = "在另一台设备上打开本应用、切到「接收」页就行",
                         showDivider = false,
                     )
                 } else {

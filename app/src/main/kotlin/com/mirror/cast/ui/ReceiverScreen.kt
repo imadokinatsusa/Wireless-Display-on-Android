@@ -65,17 +65,16 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
-import com.mirror.cast.CaptureSpec
+import com.mirror.cast.Broadcaster
 import com.mirror.cast.HotspotController
+import com.mirror.cast.CaptureSpec
 import com.mirror.cast.LocalAddress
 import com.mirror.cast.MirrorApplication
 import com.mirror.cast.NetworkWatcher
-import com.mirror.cast.ProbeResponder
 import com.mirror.cast.SessionState
 import com.mirror.cast.discovery.CastLink
 import com.mirror.cast.discovery.CastTarget
 import com.mirror.cast.discovery.ConnectCode
-import com.mirror.cast.discovery.ProbeReply
 import com.mirror.cast.p2p.WifiP2pLink
 import com.mirror.cast.qr.QrCode
 import com.mirror.cast.web.ReceiverSession
@@ -102,20 +101,16 @@ fun ReceiverContent(onFullscreenChange: (Boolean) -> Unit = {}) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val application = context.applicationContext as MirrorApplication
-    val code = remember { ConnectCode.random() }
+    val code = remember { Broadcaster.newCode() }
     val session = remember(code) { ReceiverSession(runtime = application.runtime, code = code) }
     val deviceName = remember { Build.MODEL ?: "Android" }
-
-    // 在固定端口上应答发送端的探测 —— 取代了原来的 UDP 广播。
-    // 广播"喊"出去可能没人听见，应答别人"敲门"却基本都通。
-    val responder = remember(session) {
-        ProbeResponder(scope) {
-            ProbeReply(
-                deviceName = deviceName,
-                signalingPort = session.signalingPort,
-                code = code,
-            )
-        }
+    val broadcaster = remember(session) {
+        Broadcaster(
+            scope = scope,
+            code = code,
+            portProvider = { session.signalingPort },
+            deviceName = deviceName,
+        )
     }
 
     /**
@@ -186,8 +181,9 @@ fun ReceiverContent(onFullscreenChange: (Boolean) -> Unit = {}) {
     // 网络接口一变就重启广播：接收端换了接口（连上热点）后必须重新广播，否则发送端搜不到
     val networkWatcher = remember(context) {
         NetworkWatcher(context) {
-            // 换网卡后只需要刷新二维码里的地址：信令端口没变，发现端口是固定的
             localIp = LocalAddress.ipv4()
+            broadcaster.stop()
+            broadcaster.start()
         }
     }
 
@@ -219,18 +215,19 @@ fun ReceiverContent(onFullscreenChange: (Boolean) -> Unit = {}) {
         p2pStatus.groupOwnerAddress,
     ) {
         val port = session.signalingPort
-        // 只有**真的一个可用网络都没有**时，二维码才切到 Wi-Fi Direct 地址；
-        // 其余情况一律用普通局域网地址。因为建 P2P 组会断开 Wi-Fi，
-        // 那时用 P2P 地址反而逼着对方先配对，得不偿失。
-        val groupOwner = p2pStatus.groupOwnerAddress
-        val useWifiDirect = groupOwner != null && localIp == null
-        val host = if (useWifiDirect) groupOwner else localIp
-        if (port <= 0 || host == null) {
+        if (port <= 0) {
             null
         } else {
-            CastLink.encode(
-                CastTarget(host, port, code, deviceName, viaWifiDirect = useWifiDirect),
-            )
+            // 建了 Wi-Fi Direct 组就优先用它：那个地址不依赖任何已有网络
+            val groupOwner = p2pStatus.groupOwnerAddress
+            val host = groupOwner ?: localIp
+            if (host == null) {
+                null
+            } else {
+                CastLink.encode(
+                    CastTarget(host, port, code, deviceName, viaWifiDirect = groupOwner != null),
+                )
+            }
         }
     }
     val qrImage = remember(castLink, qrPixels) { castLink?.let { QrCode.bitmap(it, qrPixels) } }
@@ -239,20 +236,13 @@ fun ReceiverContent(onFullscreenChange: (Boolean) -> Unit = {}) {
         networkWatcher.start()
         p2p.start()
         session.prepare()
-        responder.start()
+        broadcaster.start()
         session.start(scope)
-        // ⚠️ 只在**一个可用网络都没有**时才建 Wi-Fi Direct 组。
-        //
-        // 手机基本都是单射频：一旦建 P2P 组，本机就从原来的 Wi-Fi 上断开了，
-        // 地址只剩 192.168.49.1。而发送端还留在 Wi-Fi 网段 —— 结果是
-        // **扫码（二维码里是 Wi-Fi 地址）和扫端口会双双失效**（这个坑踩过）。
-        // 所以建组必须给"同一 Wi-Fi / 热点"这条主路让位，只在真的离线时才用它。
-        if (localIp == null) {
-            if (p2pGranted) {
-                p2p.createGroup()
-            } else {
-                p2pPermissionLauncher.launch(p2pPermission)
-            }
+        // 进这一页就把 Wi-Fi Direct 组建起来 —— 这是默认连法，不等按钮、不等用户操作
+        if (p2pGranted) {
+            p2p.createGroup()
+        } else {
+            p2pPermissionLauncher.launch(p2pPermission)
         }
     }
 
@@ -267,26 +257,16 @@ fun ReceiverContent(onFullscreenChange: (Boolean) -> Unit = {}) {
     // 全屏状态同步给外壳（它会隐藏底部切换栏）
     LaunchedEffect(fullscreen) { onFullscreenChange(fullscreen) }
 
-    // 画面区尺寸一变（旋转屏幕、切全屏、系统栏显隐）就要复位缩放并重新布局。
-    //
-    // 这里多了一步 `clearImage()`：`SurfaceView` 是独立图层，尺寸变了之后
-    // **旧内容会按老尺寸错位挂着**，非要等到新的一帧才重新适配 ——
-    // 而发送端屏幕静止时编码器根本不发帧（这是正常的优化），
-    // 于是画面就"平移到左上角"卡在那儿不动。与其挂着错位，不如先清干净：
-    // 下一帧一到自然就正了。
-    LaunchedEffect(
-        configuration.orientation,
-        configuration.screenWidthDp,
-        configuration.screenHeightDp,
-        fullscreen,
-    ) {
+    // 旋转 / 尺寸变化：复位缩放平移并重新布局，比例才会真的适应
+    LaunchedEffect(configuration.orientation, configuration.screenWidthDp, configuration.screenHeightDp) {
         zoomState.value = 1f
         offsetXState.value = 0f
         offsetYState.value = 0f
         renderer?.let { view ->
-            view.setScalingType(RendererCommon.ScalingType.SCALE_ASPECT_FIT)
+            view.setScalingType(
+                RendererCommon.ScalingType.SCALE_ASPECT_FIT,
+            )
             view.requestLayout()
-            view.clearImage()
         }
     }
 
@@ -295,7 +275,7 @@ fun ReceiverContent(onFullscreenChange: (Boolean) -> Unit = {}) {
     DisposableEffect(session) {
         onDispose {
             networkWatcher.stop()
-            responder.stop()
+            broadcaster.stop()
             p2p.stop()
             hotspot.stop()
             session.detachRenderer()
@@ -356,12 +336,7 @@ fun ReceiverContent(onFullscreenChange: (Boolean) -> Unit = {}) {
                     code = code,
                     deviceName = deviceName,
                     qr = qrImage,
-                    statusLine = "本机 ${LocalAddress.summary()} · " +
-                        (
-                            responder.failureReason?.let { "应答失败 $it" }
-                                ?: "应答端口 ${responder.port}"
-                            ) +
-                        " · " + diagnostics.line(),
+                    statusLine = diagnostics.line(),
                     hotspotActive = hotspot.running,
                     hotspotDetail = hotspotError
                         ?: hotspotInfo?.let { "${it.displayName} / 密码 ${it.password}" },
@@ -378,8 +353,9 @@ fun ReceiverContent(onFullscreenChange: (Boolean) -> Unit = {}) {
                                 hotspotError = error
                             }
                         }
-                        // 开/关热点会换掉网络接口，但发现端口是固定的、应答服务监听全部接口，
-                        // 所以这里不需要重启它 —— 原来那套 UDP 广播才必须重新绑定
+                        // 开/关热点会换掉网络接口：广播必须重新绑定，否则发送端收不到
+                        broadcaster.stop()
+                        broadcaster.start()
                     },
                     onWifiSettings = {
                         runCatching {
