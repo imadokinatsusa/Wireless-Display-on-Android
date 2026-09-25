@@ -261,16 +261,26 @@ fun ReceiverContent(onFullscreenChange: (Boolean) -> Unit = {}) {
     // 全屏状态同步给外壳（它会隐藏底部切换栏）
     LaunchedEffect(fullscreen) { onFullscreenChange(fullscreen) }
 
-    // 旋转 / 尺寸变化：复位缩放平移并重新布局，比例才会真的适应
-    LaunchedEffect(configuration.orientation, configuration.screenWidthDp, configuration.screenHeightDp) {
+    // 画面区尺寸一变（旋转屏幕、切全屏、系统栏显隐）就要复位缩放并重新布局。
+    //
+    // 这里多了一步 `clearImage()`：`SurfaceView` 是独立图层，尺寸变了之后
+    // **旧内容会按老尺寸错位挂着**，非要等到新的一帧才重新适配 ——
+    // 而发送端屏幕静止时编码器根本不发帧（这是正常的优化），
+    // 于是画面就"平移到左上角"卡在那儿不动。与其挂着错位，不如先清干净：
+    // 下一帧一到自然就正了。
+    LaunchedEffect(
+        configuration.orientation,
+        configuration.screenWidthDp,
+        configuration.screenHeightDp,
+        fullscreen,
+    ) {
         zoomState.value = 1f
         offsetXState.value = 0f
         offsetYState.value = 0f
         renderer?.let { view ->
-            view.setScalingType(
-                RendererCommon.ScalingType.SCALE_ASPECT_FIT,
-            )
+            view.setScalingType(RendererCommon.ScalingType.SCALE_ASPECT_FIT)
             view.requestLayout()
+            view.clearImage()
         }
     }
 
