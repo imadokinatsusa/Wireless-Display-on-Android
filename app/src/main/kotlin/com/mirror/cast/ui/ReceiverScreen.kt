@@ -65,16 +65,17 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
-import com.mirror.cast.Broadcaster
-import com.mirror.cast.HotspotController
 import com.mirror.cast.CaptureSpec
+import com.mirror.cast.HotspotController
 import com.mirror.cast.LocalAddress
 import com.mirror.cast.MirrorApplication
 import com.mirror.cast.NetworkWatcher
+import com.mirror.cast.ProbeResponder
 import com.mirror.cast.SessionState
 import com.mirror.cast.discovery.CastLink
 import com.mirror.cast.discovery.CastTarget
 import com.mirror.cast.discovery.ConnectCode
+import com.mirror.cast.discovery.ProbeReply
 import com.mirror.cast.p2p.WifiP2pLink
 import com.mirror.cast.qr.QrCode
 import com.mirror.cast.web.ReceiverSession
@@ -101,16 +102,20 @@ fun ReceiverContent(onFullscreenChange: (Boolean) -> Unit = {}) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val application = context.applicationContext as MirrorApplication
-    val code = remember { Broadcaster.newCode() }
+    val code = remember { ConnectCode.random() }
     val session = remember(code) { ReceiverSession(runtime = application.runtime, code = code) }
     val deviceName = remember { Build.MODEL ?: "Android" }
-    val broadcaster = remember(session) {
-        Broadcaster(
-            scope = scope,
-            code = code,
-            portProvider = { session.signalingPort },
-            deviceName = deviceName,
-        )
+
+    // 在固定端口上应答发送端的探测 —— 取代了原来的 UDP 广播。
+    // 广播"喊"出去可能没人听见，应答别人"敲门"却基本都通。
+    val responder = remember(session) {
+        ProbeResponder(scope) {
+            ProbeReply(
+                deviceName = deviceName,
+                signalingPort = session.signalingPort,
+                code = code,
+            )
+        }
     }
 
     /**
@@ -181,9 +186,8 @@ fun ReceiverContent(onFullscreenChange: (Boolean) -> Unit = {}) {
     // 网络接口一变就重启广播：接收端换了接口（连上热点）后必须重新广播，否则发送端搜不到
     val networkWatcher = remember(context) {
         NetworkWatcher(context) {
+            // 换网卡后只需要刷新二维码里的地址：信令端口没变，发现端口是固定的
             localIp = LocalAddress.ipv4()
-            broadcaster.stop()
-            broadcaster.start()
         }
     }
 
@@ -236,7 +240,7 @@ fun ReceiverContent(onFullscreenChange: (Boolean) -> Unit = {}) {
         networkWatcher.start()
         p2p.start()
         session.prepare()
-        broadcaster.start()
+        responder.start()
         session.start(scope)
         // 进这一页就把 Wi-Fi Direct 组建起来 —— 这是默认连法，不等按钮、不等用户操作
         if (p2pGranted) {
@@ -275,7 +279,7 @@ fun ReceiverContent(onFullscreenChange: (Boolean) -> Unit = {}) {
     DisposableEffect(session) {
         onDispose {
             networkWatcher.stop()
-            broadcaster.stop()
+            responder.stop()
             p2p.stop()
             hotspot.stop()
             session.detachRenderer()
@@ -353,9 +357,8 @@ fun ReceiverContent(onFullscreenChange: (Boolean) -> Unit = {}) {
                                 hotspotError = error
                             }
                         }
-                        // 开/关热点会换掉网络接口：广播必须重新绑定，否则发送端收不到
-                        broadcaster.stop()
-                        broadcaster.start()
+                        // 开/关热点会换掉网络接口，但发现端口是固定的、应答服务监听全部接口，
+                        // 所以这里不需要重启它 —— 原来那套 UDP 广播才必须重新绑定
                     },
                     onWifiSettings = {
                         runCatching {
