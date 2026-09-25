@@ -17,8 +17,31 @@ import java.net.NetworkInterface
  */
 object LocalAddress {
 
-    /** 取本机主要局域网 IPv4。 */
-    fun ipv4(): String? = all().firstOrNull()
+    /**
+     * 取本机主要局域网 IPv4 —— **按"对端最可能连得上"排序后取第一个**。
+     *
+     * 为什么不直接取第一个：`NetworkInterface` 的枚举顺序**不保证**。
+     * 带 VPN、蜂窝、Wi-Fi Direct 接口的设备上，排在最前面的往往不是对端能到达的那个，
+     * 于是二维码里就写进一个连不上的地址 —— 表现正是"连接对端失败"（踩过）。
+     */
+    fun ipv4(): String? = all().maxByOrNull { reachability(it) }
+
+    /**
+     * 给地址打一个"对端有多可能连上"的分。
+     *
+     * 依据是各网段常见的身份：
+     * - `192.168.x.x`：家用/随身 Wi-Fi 与热点的标准段，最可能通；
+     * - `172.x`、`10.x`：企业网、VPN、蜂窝内网 —— 有时通，有时只是本地可达；
+     * - `192.168.49.x`：**Wi-Fi Direct 群主**的固定段，除非对方已经加入这个组，
+     *   否则连不上，所以排在最后。
+     */
+    private fun reachability(address: String): Int = when {
+        address.startsWith(P2P_GROUP_PREFIX) -> 0
+        address.startsWith("192.168.") -> 4
+        address.startsWith("172.") -> 2
+        address.startsWith("10.") -> 1
+        else -> 1
+    }
 
     /**
      * 列出所有已启用的 IPv4 地址。
@@ -39,6 +62,9 @@ object LocalAddress {
 
     /** 一行诊断文字，例如 `192.168.43.1`，多个时用逗号分隔。 */
     fun summary(): String = all().joinToString(",").ifEmpty { "无网络地址" }
+
+    /** Wi-Fi Direct 群主的固定网段。 */
+    private const val P2P_GROUP_PREFIX = "192.168.49."
 }
 
 /**
