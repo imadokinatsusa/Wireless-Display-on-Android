@@ -20,7 +20,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.AspectRatio
 import androidx.compose.material.icons.filled.Cast
 import androidx.compose.material.icons.filled.CenterFocusStrong
 import androidx.compose.material.icons.filled.Fullscreen
@@ -116,7 +115,6 @@ fun ReceiverContent(onFullscreenChange: (Boolean) -> Unit = {}) {
 
     // 默认小屏：一开始不要全屏
     var fullscreen by remember { mutableStateOf(false) }
-    var fillScreen by remember { mutableStateOf(false) }
     var expandedRow by remember { mutableStateOf(ExpandedRow.None) }
 
     var qualityName by remember { mutableStateOf(CaptureSpec.DEFAULT_QUALITY.name) }
@@ -142,24 +140,10 @@ fun ReceiverContent(onFullscreenChange: (Boolean) -> Unit = {}) {
         offsetYState.value = 0f
         renderer?.let { view ->
             view.setScalingType(
-                if (fillScreen) {
-                    RendererCommon.ScalingType.SCALE_ASPECT_FILL
-                } else {
-                    RendererCommon.ScalingType.SCALE_ASPECT_FIT
-                },
+                RendererCommon.ScalingType.SCALE_ASPECT_FIT,
             )
             view.requestLayout()
         }
-    }
-
-    LaunchedEffect(fillScreen) {
-        renderer?.setScalingType(
-            if (fillScreen) {
-                RendererCommon.ScalingType.SCALE_ASPECT_FILL
-            } else {
-                RendererCommon.ScalingType.SCALE_ASPECT_FIT
-            },
-        )
     }
 
     SystemBarsEffect(hidden = fullscreen)
@@ -299,13 +283,6 @@ fun ReceiverContent(onFullscreenChange: (Boolean) -> Unit = {}) {
                         ) {
                             expandedRow =
                                 if (expandedRow == ExpandedRow.FrameRate) ExpandedRow.None else ExpandedRow.FrameRate
-                        }
-                        SmallIconButton(
-                            icon = Icons.Filled.AspectRatio,
-                            description = if (fillScreen) "填充" else "适应",
-                            active = fillScreen,
-                        ) {
-                            fillScreen = !fillScreen
                         }
                         SmallIconButton(
                             icon = Icons.Filled.CenterFocusStrong,
@@ -499,7 +476,6 @@ private fun VideoSurface(
             SurfaceViewRenderer(viewContext).apply {
                 init(application.runtime.eglContext, null)
                 setScalingType(RendererCommon.ScalingType.SCALE_ASPECT_FIT)
-                setEnableHardwareScaler(true)
                 session.attachRenderer(this)
                 onRenderer(this)
             }
