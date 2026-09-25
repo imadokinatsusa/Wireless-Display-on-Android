@@ -27,6 +27,7 @@ import androidx.compose.material.icons.filled.FullscreenExit
 import androidx.compose.material.icons.filled.HighQuality
 import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Wifi
+import androidx.compose.material.icons.filled.WifiTethering
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -60,6 +61,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import com.mirror.cast.Broadcaster
+import com.mirror.cast.HotspotController
 import com.mirror.cast.CaptureSpec
 import com.mirror.cast.LocalAddress
 import com.mirror.cast.MirrorApplication
@@ -104,6 +106,20 @@ fun ReceiverContent(onFullscreenChange: (Boolean) -> Unit = {}) {
             deviceName = deviceName,
         )
     }
+
+    /**
+     * 热点由**接收端**开 —— 这条分工是刻意的，和 AirDroid 的规则一致：
+     * **开热点的那台必须是接收端，不能是投屏端。**
+     *
+     * 道理在角色：接收端本来就只需要"守在那里"，开热点对它只是多绑一个接口；
+     * 而发送端是最需要往外发数据的一方，让它同时扮演网关，路由与网络候选最容易出岔子。
+     * 接收端开热点后地址固定是 `192.168.43.1` 这类 softap 地址，而 [LocalAddress]
+     * 当初特意绕过 ConnectivityManager 去枚举 NetworkInterface，正是为了拿到它 ——
+     * 二维码会自动跟着变成这个地址。
+     */
+    val hotspot = remember(context) { HotspotController(context) }
+    var hotspotInfo by remember { mutableStateOf<HotspotController.HotspotInfo?>(null) }
+    var hotspotError by remember { mutableStateOf<String?>(null) }
 
     // 二维码里的地址必须跟着网络走：换 Wi-Fi / 连上热点后 IP 就变了，
     // 不刷新的话对方扫到的是一个连不上的旧地址
@@ -173,6 +189,7 @@ fun ReceiverContent(onFullscreenChange: (Boolean) -> Unit = {}) {
         onDispose {
             networkWatcher.stop()
             broadcaster.stop()
+            hotspot.stop()
             session.detachRenderer()
             renderer?.let { view -> runCatching { view.release() } }
             renderer = null
@@ -232,6 +249,24 @@ fun ReceiverContent(onFullscreenChange: (Boolean) -> Unit = {}) {
                     deviceName = deviceName,
                     qr = qrImage,
                     statusLine = diagnostics.line(),
+                    hotspotActive = hotspot.running,
+                    hotspotDetail = hotspotError
+                        ?: hotspotInfo?.let { "${it.displayName} / 密码 ${it.password}" },
+                    onHotspot = {
+                        if (hotspot.running) {
+                            hotspot.stop()
+                            hotspotInfo = null
+                            hotspotError = null
+                        } else {
+                            hotspot.start { info, error ->
+                                hotspotInfo = info
+                                hotspotError = error
+                            }
+                        }
+                        // 开/关热点会换掉网络接口：广播必须重新绑定，否则发送端收不到
+                        broadcaster.stop()
+                        broadcaster.start()
+                    },
                     onWifiSettings = {
                         runCatching {
                             context.startActivity(
@@ -413,6 +448,9 @@ private fun ConnectionCard(
     deviceName: String,
     qr: ImageBitmap?,
     statusLine: String,
+    hotspotActive: Boolean,
+    hotspotDetail: String?,
+    onHotspot: () -> Unit,
     onWifiSettings: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -459,14 +497,37 @@ private fun ConnectionCard(
             fontFamily = FontFamily.Monospace,
             color = Color(0xFF8A8A8A),
         )
-        IconButton(
-            onClick = onWifiSettings,
-            modifier = Modifier
-                .size(40.dp)
-                .clip(CircleShape)
-                .background(Color(0x22FFFFFF)),
-        ) {
-            Icon(imageVector = Icons.Filled.Wifi, contentDescription = "Wi-Fi 设置", tint = Color.White)
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            IconButton(
+                onClick = onWifiSettings,
+                modifier = Modifier
+                    .size(40.dp)
+                    .clip(CircleShape)
+                    .background(Color(0x22FFFFFF)),
+            ) {
+                Icon(imageVector = Icons.Filled.Wifi, contentDescription = "Wi-Fi 设置", tint = Color.White)
+            }
+            IconButton(
+                onClick = onHotspot,
+                modifier = Modifier
+                    .size(40.dp)
+                    .clip(CircleShape)
+                    .background(if (hotspotActive) Color(0x5530D158) else Color(0x22FFFFFF)),
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.WifiTethering,
+                    contentDescription = "开热点给发送端连",
+                    tint = if (hotspotActive) Color(0xFF30D158) else Color.White,
+                )
+            }
+        }
+        if (hotspotDetail != null) {
+            Text(
+                text = hotspotDetail,
+                style = MaterialTheme.typography.labelSmall,
+                fontFamily = FontFamily.Monospace,
+                color = if (hotspotActive) Color(0xFF30D158) else Color(0xFFFF9F0A),
+            )
         }
     }
 }

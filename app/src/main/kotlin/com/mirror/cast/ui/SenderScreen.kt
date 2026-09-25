@@ -2,13 +2,9 @@ package com.mirror.cast.ui
 
 import android.Manifest
 import android.app.Activity
-import android.content.Context
 import android.content.pm.PackageManager
-import android.content.Intent
 import android.media.projection.MediaProjectionManager
 import android.os.Build
-import android.provider.Settings
-import android.view.WindowManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Column
@@ -24,10 +20,8 @@ import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material.icons.filled.QrCodeScanner
-import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Stop
-import androidx.compose.material.icons.filled.WifiTethering
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -54,7 +48,6 @@ import com.journeyapps.barcodescanner.ScanOptions
 import com.mirror.cast.CaptureSpec
 import com.mirror.cast.Discovery
 import com.mirror.cast.FailedSession
-import com.mirror.cast.HotspotController
 import com.mirror.cast.LocalAddress
 import com.mirror.cast.NetworkWatcher
 import com.mirror.cast.MirrorService
@@ -94,16 +87,13 @@ fun SenderContent(lastCrash: String? = null) {
     var autoQuality by remember { mutableStateOf(true) }
     var showBitrate by remember { mutableStateOf(false) }
     var showDetails by remember { mutableStateOf(false) }
-    val hotspot = remember(context) { HotspotController(context) }
-    // 网络接口一变（开/关热点、切 Wi-Fi）就重启发现：否则 UDP socket 还绑在旧接口上
+    // 网络接口一变（切 Wi-Fi、连上接收端开的热点）就重启发现：否则 UDP socket 还绑在旧接口上
     val networkWatcher = remember(context) {
         NetworkWatcher(context) {
             discovery.stop()
             discovery.start()
         }
     }
-    var hotspotInfo by remember { mutableStateOf<HotspotController.HotspotInfo?>(null) }
-    var hotspotError by remember { mutableStateOf<String?>(null) }
     var waitSeconds by remember { mutableIntStateOf(0) }
 
     val adjustable = active as? QualityAdjustable
@@ -198,7 +188,6 @@ fun SenderContent(lastCrash: String? = null) {
         onDispose {
             networkWatcher.stop()
             discovery.stop()
-            hotspot.stop()
         }
     }
 
@@ -245,6 +234,7 @@ fun SenderContent(lastCrash: String? = null) {
                     iconTint = IconTints.green,
                     title = "自动画质",
                     subtitle = "丢包或延迟变差时自动降档",
+                    showDivider = false,
                     trailing = {
                         Switch(
                             checked = autoQuality,
@@ -254,38 +244,6 @@ fun SenderContent(lastCrash: String? = null) {
                             },
                         )
                     },
-                )
-                SettingsRow(
-                    icon = Icons.Filled.WifiTethering,
-                    iconTint = IconTints.blue,
-                    title = "发送端热点",
-                    subtitle = hotspotError
-                        ?: hotspotInfo?.let { "${it.displayName} / ${it.password}" }
-                        ?: "两台设备不在同一 Wi-Fi 时用",
-                    value = if (hotspot.running) "已开" else null,
-                    onClick = {
-                        if (hotspot.running) {
-                            hotspot.stop()
-                            hotspotInfo = null
-                            hotspotError = null
-                        } else {
-                            hotspot.start { info, error ->
-                                hotspotInfo = info
-                                hotspotError = error
-                            }
-                        }
-                        // 开/关热点会切换网络接口：发现必须重新绑定，否则收不到广播
-                        discovery.stop()
-                        discovery.start()
-                    },
-                )
-                SettingsRow(
-                    icon = Icons.Filled.Settings,
-                    iconTint = ColorGray,
-                    title = "系统无线设置",
-                    subtitle = "热点被系统拒绝时去这里手动开",
-                    showDivider = false,
-                    onClick = { openWirelessSettings(context) },
                 )
             }
             GroupSpacer()
@@ -313,7 +271,7 @@ fun SenderContent(lastCrash: String? = null) {
                         title = "搜索中…",
                         subtitle = when {
                             discovery.failureReason != null -> "没搜到设备（${discovery.failureReason}）"
-                            waitSeconds > 8 && !hotspot.running -> "没搜到？两台设备不在同一 Wi-Fi 时可开热点"
+                            waitSeconds > 8 -> "没搜到？让接收端点「开热点」，这台连上去就行"
                             else -> "已等 ${waitSeconds}s"
                         },
                         showDivider = false,
@@ -422,24 +380,3 @@ private data class CastRequest(
 )
 
 private val ColorGray = androidx.compose.ui.graphics.Color(0xFF8E8E93)
-
-/** 跳到系统的无线设置（热点开不起来时的出路）。 */
-private fun openWirelessSettings(context: Context) {
-    runCatching {
-        context.startActivity(
-            Intent(Settings.ACTION_WIRELESS_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
-        )
-    }
-}
-
-/** 屏幕刷新率 —— 采集帧率的物理上限。 */
-@Suppress("DEPRECATION")
-private fun Context.displayRefreshRate(): Float =
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-        display?.refreshRate ?: DEFAULT_HZ
-    } else {
-        val manager = getSystemService(Context.WINDOW_SERVICE) as? WindowManager
-        manager?.defaultDisplay?.refreshRate ?: DEFAULT_HZ
-    }
-
-private const val DEFAULT_HZ = 60f
