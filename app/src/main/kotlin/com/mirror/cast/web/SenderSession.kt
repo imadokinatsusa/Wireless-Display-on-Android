@@ -202,6 +202,7 @@ class SenderSession(
             },
             onFailed = { reason -> fail("$reason（本机 ${LocalAddress.summary()}）") },
             onRemoteVideo = { /* 发送端不接收画面 */ },
+            onIceState = { ice -> _diagnostics.update { it.copy(ice = ice) } },
         )
 
         val connection = runtime.onSignaling {
