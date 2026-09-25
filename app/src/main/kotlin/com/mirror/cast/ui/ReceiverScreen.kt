@@ -8,6 +8,7 @@ import android.os.Build
 import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -25,7 +26,6 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Cast
-import androidx.compose.material.icons.filled.CenterFocusStrong
 import androidx.compose.material.icons.filled.CompareArrows
 import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.FullscreenExit
@@ -239,6 +239,23 @@ fun ReceiverContent(onFullscreenChange: (Boolean) -> Unit = {}) {
         session.prepare()
         broadcaster.start()
         session.start(scope)
+        // 只在**真的一个网络都没有**时才自动建组：Wi-Fi Direct 组会占住 Wi-Fi 射频，
+        // 已经有同一 Wi-Fi / 热点可用时再建它，只会把投屏拖慢（这就是"卡卡的"来源）
+        if (localIp == null) {
+            if (p2pGranted) {
+                p2p.createGroup()
+            } else {
+                p2pPermissionLauncher.launch(p2pPermission)
+            }
+        }
+    }
+
+    // 断开之后清掉渲染器里的最后一帧：否则画面停在最后一帧，
+    // 看着像"还在投"，实际已经断了
+    LaunchedEffect(state) {
+        if (state !is SessionState.Streaming) {
+            renderer?.clearImage()
+        }
     }
 
     // 全屏状态同步给外壳（它会隐藏底部切换栏）
@@ -279,6 +296,12 @@ fun ReceiverContent(onFullscreenChange: (Boolean) -> Unit = {}) {
         offsetYState.value = 0f
     }
 
+    // 全屏切换时让内边距与圆角平滑过渡 —— 直接突变的话，画面会先"跳"一下再铺满
+    val screenPaddingSide by animateDpAsState(if (fullscreen) 0.dp else 16.dp, label = "side")
+    val screenPaddingTop by animateDpAsState(if (fullscreen) 0.dp else 66.dp, label = "top")
+    val screenPaddingBottom by animateDpAsState(if (fullscreen) 0.dp else 150.dp, label = "bottom")
+    val screenCorner by animateDpAsState(if (fullscreen) 0.dp else 14.dp, label = "corner")
+
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -289,18 +312,12 @@ fun ReceiverContent(onFullscreenChange: (Boolean) -> Unit = {}) {
             modifier = Modifier
                 .fillMaxSize()
                 .padding(
-                    if (fullscreen) {
-                        androidx.compose.foundation.layout.PaddingValues(0.dp)
-                    } else {
-                        androidx.compose.foundation.layout.PaddingValues(
-                            start = 16.dp,
-                            end = 16.dp,
-                            top = 66.dp,
-                            bottom = 150.dp,
-                        )
-                    },
+                    start = screenPaddingSide,
+                    end = screenPaddingSide,
+                    top = screenPaddingTop,
+                    bottom = screenPaddingBottom,
                 )
-                .clip(RoundedCornerShape(if (fullscreen) 0.dp else 14.dp))
+                .clip(RoundedCornerShape(screenCorner))
                 // 等待态的内容直接压在这块板上，所以底色必须是确定的黑 ——
                 // 不能指望 SurfaceView 未出帧时的底色（浅色主题下会是白的，白字就没了）
                 .background(Color.Black),
@@ -430,10 +447,6 @@ fun ReceiverContent(onFullscreenChange: (Boolean) -> Unit = {}) {
                             expandedRow =
                                 if (expandedRow == ExpandedRow.FrameRate) ExpandedRow.None else ExpandedRow.FrameRate
                         }
-                        SmallIconButton(
-                            icon = Icons.Filled.CenterFocusStrong,
-                            description = "复位",
-                        ) { reset() }
                     }
 
                     when (expandedRow) {
@@ -645,7 +658,10 @@ private fun SystemBarsEffect(hidden: Boolean) {
         val window = (view.context as? Activity)?.window
         val controller = window?.let { WindowInsetsControllerCompat(it, view) }
         if (hidden) {
-            controller?.hide(WindowInsetsCompat.Type.systemBars())
+            // 只隐藏**状态栏**，刻意保留导航栏：两台设备屏幕比例不同时，
+            // 画面等比缩放后底下必然空出一块 —— 留着导航栏，那块就不是死黑，
+            // 而且系统返回手势还能正常用
+            controller?.hide(WindowInsetsCompat.Type.statusBars())
             controller?.systemBarsBehavior =
                 WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
         } else {
