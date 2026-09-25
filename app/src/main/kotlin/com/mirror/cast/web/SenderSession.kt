@@ -388,15 +388,16 @@ class SenderSession(
     private suspend fun fetchStats(): RTCStatsReport? {
         val connection = peerConnection ?: return null
         return withTimeoutOrNull(STATS_TIMEOUT_MILLIS) {
-            suspendCancellableCoroutine { continuation ->
-                runtime.onSignaling {
+            runtime.onSignaling {
+                suspendCancellableCoroutine { continuation ->
                     connection.getStats(
                         object : RTCStatsCollectorCallback {
                             override fun onStatsDelivered(report: RTCStatsReport?) {
                                 if (continuation.isActive) continuation.resume(report)
                             }
-                        },
-                    )
+                            },
+                        )
+                    }
                 }
             }
         }
