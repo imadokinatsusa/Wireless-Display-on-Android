@@ -171,11 +171,19 @@ fun ReceiverContent(onFullscreenChange: (Boolean) -> Unit = {}) {
     // 不刷新的话对方扫到的是一个连不上的旧地址
     var localIp by remember { mutableStateOf(LocalAddress.ipv4()) }
 
-    // 网络接口一变就刷新本机地址：二维码里写的就是它 ——
-    // 换 Wi-Fi 之后不刷新，对方扫到的就是一个连不上的旧地址
+    /**
+     * 能不能走局域网直连。
+     *
+     * **必须用 [LocalAddress.hasLan]，不能只看"有没有 IP"**：关掉 Wi-Fi 之后设备往往还挂着
+     * 流量，蜂窝内网的地址照样在，只看 IP 会被误判成"有网络"，于是死活不建 Wi-Fi Direct 组。
+     */
+    var hasLan by remember { mutableStateOf(LocalAddress.hasLan(context)) }
+
+    // 网络接口一变就刷新：二维码里的地址、以及"该不该建组"都取决于它
     val networkWatcher = remember(context) {
         NetworkWatcher(context) {
             localIp = LocalAddress.ipv4()
+            hasLan = LocalAddress.hasLan(context)
         }
     }
 
@@ -201,25 +209,25 @@ fun ReceiverContent(onFullscreenChange: (Boolean) -> Unit = {}) {
     // 注意：remember 最多 4 个 key，所以这里不能把 state 也塞进去 ——
     // 端口就绪本身会通过 diagnostics 触发重组，不需要它当 key
     val castLink = remember(
+        hasLan,
         localIp,
-        code,
         session.signalingPort,
         p2pStatus.groupOwnerAddress,
     ) {
         val port = session.signalingPort
-        if (port <= 0) {
+        val groupOwner = p2pStatus.groupOwnerAddress
+        // 地址优先级是明确的：
+        // 1. 建了 Wi-Fi Direct 组 → 用群主地址（它不依赖任何已有网络）；
+        // 2. 有真的局域网 → 用局域网地址；
+        // 3. 只剩蜂窝 → **不给地址**：那个 IP 对方根本连不到，写进二维码只会让人白扫一次
+        //    （这时该做的是等 Wi-Fi Direct 组建好）。
+        val host = groupOwner ?: localIp.takeIf { hasLan }
+        if (port <= 0 || host == null) {
             null
         } else {
-            // 建了 Wi-Fi Direct 组就优先用它：那个地址不依赖任何已有网络
-            val groupOwner = p2pStatus.groupOwnerAddress
-            val host = groupOwner ?: localIp
-            if (host == null) {
-                null
-            } else {
-                CastLink.encode(
-                    CastTarget(host, port, code, deviceName, viaWifiDirect = groupOwner != null),
-                )
-            }
+            CastLink.encode(
+                CastTarget(host, port, code, deviceName, viaWifiDirect = groupOwner != null),
+            )
         }
     }
     val qrImage = remember(castLink, qrPixels) { castLink?.let { QrCode.bitmap(it, qrPixels) } }
@@ -243,8 +251,8 @@ fun ReceiverContent(onFullscreenChange: (Boolean) -> Unit = {}) {
      * 之所以跟着 `localIp` 变：主人可能先开着 Wi-Fi 扫了码，中途 Wi-Fi 断了，
      * 这时得能自动切到 Wi-Fi Direct 上去。
      */
-    LaunchedEffect(localIp, p2pGranted) {
-        if (localIp == null) {
+    LaunchedEffect(hasLan, p2pGranted) {
+        if (!hasLan) {
             if (p2pGranted) {
                 p2p.start()
                 p2p.createGroup()

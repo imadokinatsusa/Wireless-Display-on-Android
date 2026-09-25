@@ -63,6 +63,29 @@ object LocalAddress {
     /** 一行诊断文字，例如 `192.168.43.1`，多个时用逗号分隔。 */
     fun summary(): String = all().joinToString(",").ifEmpty { "无网络地址" }
 
+    /**
+     * 现在有没有**可用于局域网直连**的地址。
+     *
+     * 这是"走局域网还是走 Wi-Fi Direct"的判据，所以必须严：
+     * - **蜂窝不算**：关掉 Wi-Fi 之后设备往往还挂着流量，`10.x` 那种运营商内网地址
+     *   仍然在 [all] 里 —— 只看"有没有 IP"会被误判成"有网络"，于是死活不建组（踩过）；
+     * - **Wi-Fi Direct 自己的网段也不算**：否则刚建完组就被判成"有网了"、立刻拆掉，
+     *   来回打架。
+     *
+     * 判据分两层：当前活动网络得是 Wi-Fi / 以太网，**并且**确实存在一个不属于群主网段的地址。
+     */
+    fun hasLan(context: Context): Boolean {
+        val manager = context.applicationContext
+            .getSystemService(ConnectivityManager::class.java) ?: return false
+        val active = manager.activeNetwork ?: return false
+        val capabilities = manager.getNetworkCapabilities(active) ?: return false
+        val onWifiOrEthernet =
+            capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ||
+                capabilities.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)
+        if (!onWifiOrEthernet) return false
+        return all().any { address -> !address.startsWith(P2P_GROUP_PREFIX) }
+    }
+
     /** Wi-Fi Direct 群主的固定网段。 */
     private const val P2P_GROUP_PREFIX = "192.168.49."
 }
