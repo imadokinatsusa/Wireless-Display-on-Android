@@ -12,14 +12,25 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.Button
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Bolt
+import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material.icons.filled.WifiTethering
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -51,16 +62,13 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 /**
- * 发送端：定码率上限 → 选画质与帧率 → 选连法 → 点一台接收端 → 授权 → 交给前台服务。
+ * 发送端。视觉规则：**能图标就图标，文字只在必要处出现**。
  *
- * **带宽分工**：发送端定**码率上限**（这条链路能花多少带宽），画质与帧率在上限之内调
- * —— 接收端也能调，但它只发画质与帧率，不碰上限。
+ * - 画质 / 帧率 / 码率上限各自一张卡片，用紧凑的 chip 选择；
+ * - 四行参数收进「详情」，点一下才展开 —— 常态不占版面；
+ * - 连接方式用图标按钮，热点失败时给出路（系统设置）。
  *
- * **两种连法**：
- * - 同一 Wi-Fi（默认）：最省事，但路由器开了 AP/客户端隔离时会搜不到设备；
- * - 发送端热点：本机开"仅本地热点"，接收端连上来。
- *   注意多数手机**不能同时连 Wi-Fi 又开热点**，系统会拒绝（错误码 3）——
- *   这时界面会直接告诉你先关 Wi-Fi，或改用系统设置里的便携式热点。
+ * 带宽分工：**发送端定码率上限**，画质与帧率在其之内调（接收端也能调这两项）。
  */
 @Composable
 fun SenderScreen(onBack: () -> Unit) {
@@ -74,6 +82,7 @@ fun SenderScreen(onBack: () -> Unit) {
     var frameTier by remember { mutableStateOf(CaptureSpec.DEFAULT_FRAME_RATE_TIER) }
     var bitrateTier by remember { mutableStateOf(CaptureSpec.DEFAULT_BITRATE_TIER) }
     var autoQuality by remember { mutableStateOf(true) }
+    var showDetails by remember { mutableStateOf(false) }
     val hotspot = remember(context) { HotspotController(context) }
     var hotspotInfo by remember { mutableStateOf<HotspotController.HotspotInfo?>(null) }
     var hotspotError by remember { mutableStateOf<String?>(null) }
@@ -84,9 +93,8 @@ fun SenderScreen(onBack: () -> Unit) {
     val spec = remember { CaptureSpec.from(context.resources.displayMetrics) }
     val fps = CaptureSpec.resolveFps(frameTier, displayHz)
     val (encodeWidth, encodeHeight) = CaptureSpec.encodeSize(spec.width, spec.height, quality.maxLongEdge)
-    val estimated = CaptureSpec.bitRateFor(encodeWidth, encodeHeight, fps)
     val budget = if (bitrateTier.kbps > 0) bitrateTier.kbps * 1000 else Int.MAX_VALUE
-    val totalBitRate = minOf(quality.maxBitrate, estimated, budget)
+    val totalBitRate = minOf(quality.maxBitrate, CaptureSpec.bitRateFor(encodeWidth, encodeHeight, fps), budget)
 
     LaunchedEffect(Unit) {
         while (true) {
@@ -138,173 +146,251 @@ fun SenderScreen(onBack: () -> Unit) {
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .padding(16.dp)
+            .padding(horizontal = 14.dp, vertical = 10.dp)
             .verticalScroll(rememberScrollState()),
-        verticalArrangement = Arrangement.spacedBy(8.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         ScreenHeader(title = "发送屏幕", onBack = onBack)
 
-        // ── 码率上限：发送端的权力 ────────────────────────────────────────────
-        Text(text = "码率上限（这条链路能花多少带宽）", style = MaterialTheme.typography.titleSmall)
-        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-            CaptureSpec.BitrateTier.entries.forEach { tier ->
-                Button(
-                    contentPadding = PaddingValues(horizontal = 10.dp),
-                    onClick = {
-                        bitrateTier = tier
-                        adjustable?.let { target -> scope.launch { target.setBitrateLimit(tier.kbps) } }
-                    },
-                ) {
-                    Text(if (tier == bitrateTier) "● ${tier.label}" else tier.label)
-                }
-            }
-        }
-
-        // ── 画质 ──────────────────────────────────────────────────────────────
-        Text(text = "画质", style = MaterialTheme.typography.titleSmall)
-        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-            CaptureSpec.Quality.entries.forEach { item ->
-                Button(
-                    contentPadding = PaddingValues(horizontal = 10.dp),
-                    onClick = {
-                        quality = item
-                        adjustable?.let { target -> scope.launch { target.setQuality(item) } }
-                    },
-                ) {
-                    Text(if (item == quality) "● ${item.label}" else item.label)
-                }
-            }
-        }
-
-        // ── 帧率 ──────────────────────────────────────────────────────────────
-        Text(text = "帧率", style = MaterialTheme.typography.titleSmall)
-        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-            CaptureSpec.FrameRateTier.entries.forEach { tier ->
-                Button(
-                    contentPadding = PaddingValues(horizontal = 10.dp),
-                    onClick = {
-                        frameTier = tier
-                        val target = CaptureSpec.resolveFps(tier, displayHz)
-                        adjustable?.let { session -> scope.launch { session.setFrameRate(target) } }
-                    },
-                ) {
-                    val label = if (tier == CaptureSpec.FrameRateTier.FollowDisplay) {
-                        "跟随屏幕(${displayHz.toInt()}Hz)"
-                    } else {
-                        tier.label
-                    }
-                    Text(if (tier == frameTier) "● $label" else label)
-                }
-            }
-        }
-
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Switch(
-                checked = autoQuality,
-                onCheckedChange = { enabled ->
-                    autoQuality = enabled
-                    adjustable?.let { target -> scope.launch { target.setAutoQuality(enabled) } }
+        SettingCard(icon = Icons.Filled.Bolt, title = "码率上限") {
+            OptionChips(
+                labels = CaptureSpec.BitrateTier.entries.map { it.label },
+                selectedIndex = CaptureSpec.BitrateTier.entries.indexOf(bitrateTier),
+                onSelect = { index ->
+                    val tier = CaptureSpec.BitrateTier.entries[index]
+                    bitrateTier = tier
+                    adjustable?.let { target -> scope.launch { target.setBitrateLimit(tier.kbps) } }
                 },
             )
-            Text(text = "按网络自动切换画质", style = MaterialTheme.typography.bodySmall)
         }
 
-        // ── 参数说明：画质 / 帧率 / 总码率 ────────────────────────────────────
-        Text(
-            text = buildString {
-                appendLine("采集 ${spec.width}×${spec.height}（屏幕真实尺寸，不可缩放）")
-                appendLine("编码 ${encodeWidth}×${encodeHeight} @${fps}fps")
-                appendLine("画质 ${quality.label}（档位上限 ${quality.maxBitrate / 1_000_000}Mbps）")
-                appendLine("码率上限 ${if (bitrateTier.kbps > 0) "${bitrateTier.kbps / 1000}Mbps" else "自动"}")
-                append("总码率 约 ${"%.1f".format(totalBitRate / 1_000_000.0)}Mbps")
-            },
-            style = MaterialTheme.typography.bodySmall,
-            fontFamily = FontFamily.Monospace,
-        )
+        SettingCard(icon = Icons.Filled.Settings, title = "画质") {
+            OptionChips(
+                labels = CaptureSpec.Quality.entries.map { it.label },
+                selectedIndex = CaptureSpec.Quality.entries.indexOf(quality),
+                onSelect = { index ->
+                    val item = CaptureSpec.Quality.entries[index]
+                    quality = item
+                    adjustable?.let { target -> scope.launch { target.setQuality(item) } }
+                },
+            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Switch(
+                    checked = autoQuality,
+                    onCheckedChange = { enabled ->
+                        autoQuality = enabled
+                        adjustable?.let { target -> scope.launch { target.setAutoQuality(enabled) } }
+                    },
+                )
+                Text(
+                    text = "按网络自动切换",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
 
-        // ── 连法 ──────────────────────────────────────────────────────────────
-        Text(text = "连接方式", style = MaterialTheme.typography.titleSmall)
-        Button(
-            onClick = {
-                if (hotspot.running) {
-                    hotspot.stop()
-                    hotspotInfo = null
-                    hotspotError = null
-                    // 网络接口切回来了：发现要重新绑定，否则收不到广播
-                    discovery.stop()
-                    discovery.start()
-                } else {
-                    hotspot.start { info, error ->
-                        hotspotInfo = info
-                        hotspotError = error
-                        // 开热点会切换网络接口，同一原因：重绑
+        SettingCard(icon = Icons.Filled.PlayArrow, title = "帧率") {
+            OptionChips(
+                labels = CaptureSpec.FrameRateTier.entries.map { tier ->
+                    if (tier == CaptureSpec.FrameRateTier.FollowDisplay) "${displayHz.toInt()}Hz" else tier.label
+                },
+                selectedIndex = CaptureSpec.FrameRateTier.entries.indexOf(frameTier),
+                onSelect = { index ->
+                    val tier = CaptureSpec.FrameRateTier.entries[index]
+                    frameTier = tier
+                    val target = CaptureSpec.resolveFps(tier, displayHz)
+                    adjustable?.let { session -> scope.launch { session.setFrameRate(target) } }
+                },
+            )
+        }
+
+        // 参数详情：默认收起，点图标才展开
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            IconButton(onClick = { showDetails = !showDetails }) {
+                Icon(imageVector = Icons.Filled.Info, contentDescription = "参数详情")
+            }
+            Text(
+                text = "${encodeWidth}×${encodeHeight} @${fps}fps · 约 ${"%.1f".format(totalBitRate / 1_000_000.0)}Mbps",
+                style = MaterialTheme.typography.bodySmall,
+                fontFamily = FontFamily.Monospace,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        if (showDetails) {
+            Text(
+                text = buildString {
+                    appendLine("采集 ${spec.width}×${spec.height}（屏幕真实尺寸，不可缩放）")
+                    appendLine("编码 ${encodeWidth}×${encodeHeight} @${fps}fps")
+                    appendLine("画质 ${quality.label}（档位上限 ${quality.maxBitrate / 1_000_000}Mbps）")
+                    appendLine("码率上限 ${if (bitrateTier.kbps > 0) "${bitrateTier.kbps / 1000}Mbps" else "自动"}")
+                    append("总码率 约 ${"%.1f".format(totalBitRate / 1_000_000.0)}Mbps")
+                },
+                style = MaterialTheme.typography.bodySmall,
+                fontFamily = FontFamily.Monospace,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+
+        SettingCard(icon = Icons.Filled.WifiTethering, title = "连接方式") {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                FilterChip(
+                    selected = hotspot.running,
+                    onClick = {
+                        if (hotspot.running) {
+                            hotspot.stop()
+                            hotspotInfo = null
+                            hotspotError = null
+                        } else {
+                            hotspot.start { info, error ->
+                                hotspotInfo = info
+                                hotspotError = error
+                            }
+                        }
+                        // 开/关热点会切换网络接口：发现必须重新绑定，否则收不到广播
                         discovery.stop()
                         discovery.start()
-                    }
-                }
-            },
-        ) {
-            Text(if (hotspot.running) "关闭热点，回到同一 Wi-Fi" else "开热点（没有共同 Wi-Fi 时用）")
-        }
-        hotspotInfo?.let { info ->
-            Text(
-                text = "热点：${info.displayName}",
-                style = MaterialTheme.typography.bodyLarge,
-                fontFamily = FontFamily.Monospace,
-            )
-            Text(
-                text = "密码：${info.password}",
-                style = MaterialTheme.typography.bodyLarge,
-                fontFamily = FontFamily.Monospace,
-            )
-            Text(
-                text = "让接收端在系统设置里连上这个热点，再回到这里点设备。",
-                style = MaterialTheme.typography.bodySmall,
-            )
-        }
-        hotspotError?.let { error ->
-            Text(text = error, style = MaterialTheme.typography.bodySmall)
-            Button(onClick = { openWirelessSettings(context) }) {
-                Text("去系统设置手动开热点")
+                    },
+                    label = { Text(if (hotspot.running) "热点已开" else "开热点") },
+                )
+                FilterChip(
+                    selected = false,
+                    onClick = { openWirelessSettings(context) },
+                    label = { Text("系统设置") },
+                )
+            }
+            hotspotInfo?.let { info ->
+                Text(
+                    text = "${info.displayName} / ${info.password}",
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontFamily = FontFamily.Monospace,
+                )
+            }
+            hotspotError?.let { error ->
+                Text(
+                    text = error,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
             }
         }
 
-        // ── 设备 ──────────────────────────────────────────────────────────────
-        Text(text = "接收端设备", style = MaterialTheme.typography.titleSmall)
+        // 设备列表：一行一台，尾巴是播放图标
         val found = devices.values.sortedBy { it.beacon.deviceName }
         if (found.isEmpty()) {
-            val hint = when {
-                discovery.failureReason != null -> "没搜到设备（${discovery.failureReason}）"
-                waitSeconds > 8 && !hotspot.running ->
-                    "还没搜到设备 —— 如果两台设备不在同一个 Wi-Fi，试试上面的「开热点」"
-                else -> "正在搜索…（已等 ${waitSeconds}s）"
-            }
-            Text(text = hint, style = MaterialTheme.typography.bodySmall)
+            Text(
+                text = when {
+                    discovery.failureReason != null -> "没搜到设备（${discovery.failureReason}）"
+                    waitSeconds > 8 && !hotspot.running -> "没搜到设备 —— 两台设备不在同一 Wi-Fi 时可开热点"
+                    else -> "搜索中…（${waitSeconds}s）"
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
-
         found.forEach { device ->
-            Button(
+            Card(
                 onClick = {
                     pending = device
                     val manager = context.getSystemService(MediaProjectionManager::class.java)
                     projectionLauncher.launch(manager.createScreenCaptureIntent())
                 },
                 modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
             ) {
-                Text("投给 ${device.beacon.deviceName}（${ConnectCode.pretty(device.beacon.code)}）")
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 14.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(text = device.beacon.deviceName, style = MaterialTheme.typography.titleSmall)
+                        Text(
+                            text = ConnectCode.pretty(device.beacon.code),
+                            style = MaterialTheme.typography.bodySmall,
+                            fontFamily = FontFamily.Monospace,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Icon(imageVector = Icons.Filled.PlayArrow, contentDescription = "投给这台设备")
+                }
             }
         }
 
-        // ── 当前会话 ──────────────────────────────────────────────────────────
+        // 当前会话：诊断行 + 停止图标
         active?.let { session ->
             val diagnostics by session.diagnostics.collectAsState()
-            DiagnosticsBar(text = diagnostics.line())
-            Button(
-                onClick = { MirrorService.stop(context) },
-                modifier = Modifier.fillMaxWidth(),
-            ) {
-                Text("停止投屏")
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = diagnostics.line(),
+                    modifier = Modifier.weight(1f),
+                    style = MaterialTheme.typography.bodySmall,
+                    fontFamily = FontFamily.Monospace,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                IconButton(onClick = { MirrorService.stop(context) }) {
+                    Icon(
+                        imageVector = Icons.Filled.Stop,
+                        contentDescription = "停止投屏",
+                        tint = MaterialTheme.colorScheme.error,
+                    )
+                }
             }
+        }
+    }
+}
+
+/** 一张设置卡片：图标 + 标题 + 内容。 */
+@Composable
+private fun SettingCard(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    title: String,
+    content: @Composable () -> Unit,
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(18.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    imageVector = icon,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                )
+                Text(
+                    text = title,
+                    modifier = Modifier.padding(start = 8.dp),
+                    style = MaterialTheme.typography.titleSmall,
+                )
+            }
+            content()
+        }
+    }
+}
+
+/** 一行紧凑的选项 chip。 */
+@Composable
+private fun OptionChips(
+    labels: List<String>,
+    selectedIndex: Int,
+    onSelect: (Int) -> Unit,
+) {
+    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        labels.forEachIndexed { index, label ->
+            FilterChip(
+                selected = index == selectedIndex,
+                onClick = { onSelect(index) },
+                label = { Text(label) },
+            )
         }
     }
 }

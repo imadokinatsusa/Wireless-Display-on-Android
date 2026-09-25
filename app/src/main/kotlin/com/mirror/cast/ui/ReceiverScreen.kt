@@ -12,16 +12,28 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AspectRatio
+import androidx.compose.material.icons.filled.CenterFocusStrong
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Fullscreen
+import androidx.compose.material.icons.filled.FullscreenExit
+import androidx.compose.material.icons.filled.HighQuality
+import androidx.compose.material.icons.filled.Speed
+import androidx.compose.material.icons.filled.Wifi
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -45,7 +57,6 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
@@ -61,18 +72,14 @@ import org.webrtc.RendererCommon
 import org.webrtc.SurfaceViewRenderer
 
 /**
- * 接收端：亮出连接码 → 等发送端来连 → 像看视频一样看画面。
+ * 接收端：等发送端来连 → 像看视频一样看画面。
  *
- * 播放器式交互：
- * - **一开始投屏就自动全屏、且不显示任何按钮**；点画面唤出/收起控制层，3 秒自动淡出；
- * - 底部三个按钮：**全屏/小窗**、**画质**、**帧率** —— 后两个点击后展开一排档位，
- *   通过信令连接把请求发回发送端（画质是发送端的编码参数，但看画面的人最清楚该调什么）；
- * - 双指缩放（1x-6x）+ 单指拖动；沉浸式隐藏系统栏。
- *
- * **旋转/尺寸变化后会复位缩放并让渲染器重新布局** —— 否则画面会顶着旧比例，
- * 看起来"没有适应屏幕"。
- *
- * 对端停止后不会停在"已停止"：会话自己回去继续等下一个。
+ * 视觉规则：**控制层只有图标**，文字只保留连接码与一行诊断。
+ * - 一开始投屏就自动全屏、不显示任何按钮；点画面唤出，3 秒自动淡出；
+ * - 底部图标依次是：全屏/小窗、画质、帧率、比例、复位、缩放值；
+ * - 点「画质」「帧率」展开一排 chip，选完通过信令发回发送端
+ *   （接收端只能在上限之内调这两项，码率上限由发送端定）；
+ * - 旋转/尺寸变化会复位缩放并让渲染器重新布局，比例才会真的适应。
  */
 @Composable
 fun ReceiverScreen(onBack: () -> Unit) {
@@ -99,7 +106,7 @@ fun ReceiverScreen(onBack: () -> Unit) {
     var fullscreen by remember { mutableStateOf(false) }
     var fillScreen by remember { mutableStateOf(false) }
     var controlsVisible by remember { mutableStateOf(true) }
-    var pickerRow by remember { mutableStateOf(PickerRow.None) }
+    var expandedRow by remember { mutableStateOf(ExpandedRow.None) }
 
     var qualityName by remember { mutableStateOf(CaptureSpec.DEFAULT_QUALITY.name) }
     var fpsValue by remember { mutableIntStateOf(CaptureSpec.DEFAULT_FRAME_RATE) }
@@ -113,16 +120,15 @@ fun ReceiverScreen(onBack: () -> Unit) {
         session.start(scope)
     }
 
-    // 一开始投屏：自动全屏、收起按钮
     LaunchedEffect(state) {
         if (state is SessionState.Streaming) {
             fullscreen = true
             controlsVisible = false
-            pickerRow = PickerRow.None
+            expandedRow = ExpandedRow.None
         }
     }
 
-    // 旋转 / 尺寸变化：复位缩放平移，并让渲染器按新尺寸重新布局（比例才会真的适应）
+    // 旋转 / 尺寸变化：复位缩放平移并重新布局
     LaunchedEffect(configuration.orientation, configuration.screenWidthDp, configuration.screenHeightDp) {
         zoomState.value = 1f
         offsetXState.value = 0f
@@ -149,8 +155,8 @@ fun ReceiverScreen(onBack: () -> Unit) {
         )
     }
 
-    LaunchedEffect(controlsVisible, fullscreen, pickerRow) {
-        if (fullscreen && controlsVisible && pickerRow == PickerRow.None) {
+    LaunchedEffect(controlsVisible, fullscreen, expandedRow) {
+        if (fullscreen && controlsVisible && expandedRow == ExpandedRow.None) {
             delay(3_000)
             controlsVisible = false
         }
@@ -189,35 +195,40 @@ fun ReceiverScreen(onBack: () -> Unit) {
                 .clipToBounds(),
         )
 
+        // 未连接：只给连接码 + 一个去 Wi-Fi 设置的图标
         if (state !is SessionState.Streaming) {
             GlassPanel(
                 modifier = Modifier
                     .align(Alignment.TopCenter)
                     .fillMaxWidth(),
             ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    ConnectCodeDisplay(
+                        code = ConnectCode.pretty(code),
+                        modifier = Modifier.weight(1f),
+                        color = Color.White,
+                    )
+                    IconButton(onClick = {
+                        runCatching {
+                            context.startActivity(
+                                Intent(Settings.ACTION_WIFI_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                            )
+                        }
+                    }) {
+                        Icon(imageVector = Icons.Filled.Wifi, contentDescription = "Wi-Fi 设置", tint = Color.White)
+                    }
+                }
                 Text(
-                    text = "连接码",
+                    text = "第 2 步：在发送端点「$deviceName」",
                     style = MaterialTheme.typography.labelSmall,
                     color = Color(0xFFB0B0B0),
                 )
                 Text(
-                    text = ConnectCode.pretty(code),
-                    style = MaterialTheme.typography.headlineMedium,
+                    text = diagnostics.line(),
+                    style = MaterialTheme.typography.labelSmall,
                     fontFamily = FontFamily.Monospace,
-                    color = Color.White,
+                    color = Color(0xFF909090),
                 )
-                Text(
-                    text = "发送端选「$deviceName」；若发送端开了热点，请先在系统设置里连上它。",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = Color(0xFFB0B0B0),
-                )
-                SmallButton(text = "打开 Wi-Fi 设置") {
-                    runCatching {
-                        context.startActivity(
-                            Intent(Settings.ACTION_WIFI_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
-                        )
-                    }
-                }
             }
         }
 
@@ -225,10 +236,20 @@ fun ReceiverScreen(onBack: () -> Unit) {
             GlassPanel(
                 modifier = Modifier
                     .align(Alignment.TopStart)
-                    .padding(top = 6.dp),
+                    .padding(top = 4.dp),
             ) {
-                SmallButton(text = if (fullscreen) "退出全屏" else "返回") {
-                    if (fullscreen) fullscreen = false else onBack()
+                IconButton(
+                    onClick = { if (fullscreen) fullscreen = false else onBack() },
+                    modifier = Modifier
+                        .size(38.dp)
+                        .clip(CircleShape)
+                        .background(Color(0x33FFFFFF)),
+                ) {
+                    Icon(
+                        imageVector = if (fullscreen) Icons.Filled.FullscreenExit else Icons.Filled.Close,
+                        contentDescription = if (fullscreen) "退出全屏" else "返回",
+                        tint = Color.White,
+                    )
                 }
             }
 
@@ -240,83 +261,112 @@ fun ReceiverScreen(onBack: () -> Unit) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    horizontalArrangement = Arrangement.spacedBy(2.dp),
                 ) {
-                    SmallButton(text = if (fullscreen) "小窗" else "全屏") {
+                    ControlIcon(
+                        icon = if (fullscreen) Icons.Filled.FullscreenExit else Icons.Filled.Fullscreen,
+                        description = if (fullscreen) "小窗" else "全屏",
+                    ) {
                         fullscreen = !fullscreen
-                        pickerRow = PickerRow.None
+                        expandedRow = ExpandedRow.None
                     }
-                    SmallButton(text = "画质 ${CaptureSpec.qualityOf(qualityName).label}") {
-                        pickerRow = if (pickerRow == PickerRow.Quality) PickerRow.None else PickerRow.Quality
+                    ControlIcon(
+                        icon = Icons.Filled.HighQuality,
+                        description = "画质",
+                        active = expandedRow == ExpandedRow.Quality,
+                    ) {
+                        expandedRow = if (expandedRow == ExpandedRow.Quality) ExpandedRow.None else ExpandedRow.Quality
                     }
-                    SmallButton(text = "帧率 ${fpsValue}fps") {
-                        pickerRow = if (pickerRow == PickerRow.FrameRate) PickerRow.None else PickerRow.FrameRate
+                    ControlIcon(
+                        icon = Icons.Filled.Speed,
+                        description = "帧率",
+                        active = expandedRow == ExpandedRow.FrameRate,
+                    ) {
+                        expandedRow = if (expandedRow == ExpandedRow.FrameRate) ExpandedRow.None else ExpandedRow.FrameRate
                     }
+                    ControlIcon(
+                        icon = Icons.Filled.AspectRatio,
+                        description = if (fillScreen) "填充" else "适应",
+                        active = fillScreen,
+                    ) {
+                        fillScreen = !fillScreen
+                    }
+                    ControlIcon(icon = Icons.Filled.CenterFocusStrong, description = "复位") { reset() }
                     Spacer(modifier = Modifier.weight(1f))
-                    SmallButton(text = "缩放 ${"%.1f".format(zoomState.value)}x") { reset() }
+                    Text(
+                        text = "%.1fx".format(zoomState.value),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Color(0xFFB0B0B0),
+                    )
                 }
 
-                if (pickerRow == PickerRow.Quality) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(4.dp),
-                    ) {
+                if (expandedRow == ExpandedRow.Quality) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                         CaptureSpec.Quality.entries.forEach { tier ->
-                            SmallButton(
-                                text = if (tier.name == qualityName) "● ${tier.label}" else tier.label,
-                            ) {
-                                qualityName = tier.name
-                                scope.launch { session.requestQuality(qualityName, fpsValue) }
-                            }
+                            FilterChip(
+                                selected = tier.name == qualityName,
+                                onClick = {
+                                    qualityName = tier.name
+                                    scope.launch { session.requestQuality(qualityName, fpsValue) }
+                                },
+                                label = { Text(tier.label) },
+                            )
                         }
                     }
                 }
 
-                if (pickerRow == PickerRow.FrameRate) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(4.dp),
-                    ) {
+                if (expandedRow == ExpandedRow.FrameRate) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                         CaptureSpec.FrameRateTier.entries.forEach { tier ->
                             val target = CaptureSpec.resolveFps(tier, context.displayRefreshRateCompat())
-                            SmallButton(
-                                text = if (target == fpsValue) "● ${tier.label}" else tier.label,
-                            ) {
-                                fpsValue = target
-                                scope.launch { session.requestQuality(qualityName, target) }
-                            }
+                            FilterChip(
+                                selected = target == fpsValue,
+                                onClick = {
+                                    fpsValue = target
+                                    scope.launch { session.requestQuality(qualityName, target) }
+                                },
+                                label = { Text(tier.label) },
+                            )
                         }
                     }
                 }
 
+                // 一行诊断 + 发送端给的上限（很小、很淡，不抢画面）
                 Text(
-                    text = "发送端预算：" +
+                    text = "上限 " +
                         (if (session.remoteBitrateLimitKbps > 0) "${session.remoteBitrateLimitKbps / 1000}Mbps" else "自动") +
-                        " · 生效 ${session.remoteQuality.ifEmpty { "-" }} / ${session.remoteFrameRate}fps",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = Color(0xFF808080),
-                )
-                Text(
-                    text = diagnostics.line(),
+                        " · " + diagnostics.line(),
                     style = MaterialTheme.typography.labelSmall,
                     fontFamily = FontFamily.Monospace,
-                    color = Color(0xFFB0B0B0),
+                    color = Color(0xFF8A8A8A),
                 )
             }
         }
     }
 }
 
-private enum class PickerRow { None, Quality, FrameRate }
+private enum class ExpandedRow { None, Quality, FrameRate }
 
-/** 播放器式小按钮：胶囊、小字号、统一形状（不因文字长短变形）。 */
+/** 控制层图标按钮：圆形、半透明，选中时高亮。 */
 @Composable
-private fun SmallButton(text: String, onClick: () -> Unit) {
-    TextButton(
+private fun ControlIcon(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    description: String,
+    active: Boolean = false,
+    onClick: () -> Unit,
+) {
+    IconButton(
         onClick = onClick,
-        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
+        modifier = Modifier
+            .size(40.dp)
+            .clip(CircleShape)
+            .background(if (active) Color(0x44FFFFFF) else Color(0x22FFFFFF)),
     ) {
-        Text(text = text, color = Color.White, fontSize = 13.sp)
+        Icon(
+            imageVector = icon,
+            contentDescription = description,
+            tint = if (active) Color.White else Color(0xFFDDDDDD),
+        )
     }
 }
 
@@ -331,15 +381,15 @@ private fun GlassPanel(
     modifier: Modifier = Modifier,
     content: @Composable ColumnScope.() -> Unit,
 ) {
-    val shape = RoundedCornerShape(18.dp)
+    val shape = RoundedCornerShape(20.dp)
     Column(
         modifier = modifier
             .padding(horizontal = 10.dp, vertical = 8.dp)
             .clip(shape)
-            .background(Color(0xB3121212))
+            .background(Color(0xB0121212))
             .border(1.dp, Color(0x22FFFFFF), shape)
-            .padding(horizontal = 12.dp, vertical = 8.dp),
-        verticalArrangement = Arrangement.spacedBy(4.dp),
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
         content = content,
     )
 }
@@ -376,7 +426,6 @@ private fun android.content.Context.displayRefreshRateCompat(): Float =
  * 画面本体：渲染器 + 图层变换 + 手势。
  *
  * 变换走 `graphicsLayer` 的 lambda（绘制阶段读 State），捏合缩放不触发重组。
- * 点按与缩放分在两个 `pointerInput`：单指点是"显隐控制层"，多指才是缩放。
  */
 @Composable
 private fun VideoSurface(
