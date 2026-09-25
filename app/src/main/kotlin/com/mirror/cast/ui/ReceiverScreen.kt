@@ -178,13 +178,13 @@ fun ReceiverContent(onFullscreenChange: (Boolean) -> Unit = {}) {
      * **必须用 [LocalAddress.hasLan]，不能只看"有没有 IP"**：关掉 Wi-Fi 之后设备往往还挂着
      * 流量，蜂窝内网的地址照样在，只看 IP 会被误判成"有网络"，于是死活不建 Wi-Fi Direct 组。
      */
-    var hasLan by remember { mutableStateOf(LocalAddress.hasLan(context)) }
+    var hasLan by remember { mutableStateOf(LocalAddress.hasLan()) }
 
     // 网络接口一变就刷新：二维码里的地址、以及"该不该建组"都取决于它
     val networkWatcher = remember(context) {
         NetworkWatcher(context) {
             localIp = LocalAddress.ipv4()
-            hasLan = LocalAddress.hasLan(context)
+            hasLan = LocalAddress.hasLan()
         }
     }
 

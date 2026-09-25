@@ -64,30 +64,51 @@ object LocalAddress {
     fun summary(): String = all().joinToString(",").ifEmpty { "无网络地址" }
 
     /**
+     * 局域网接口上的 IPv4 地址 —— 排掉蜂窝、排掉 Wi-Fi Direct 群主网段。
+     *
+     * 为什么要**按接口名**排除蜂窝：关掉 Wi-Fi 之后设备往往还挂着流量，
+     * 运营商内网的 `10.x` 地址照样存在。只按网段判断的话，蜂窝会被当成"有局域网"，
+     * 于是该建组的时候死活不建（踩过）。
+     */
+    fun lanAddresses(): List<String> = runCatching {
+        NetworkInterface.getNetworkInterfaces()
+            .toList()
+            .filter { it.isUp && !it.isLoopback }
+            .filterNot { nic ->
+                val name = nic.name.lowercase()
+                CELLULAR_INTERFACE_HINTS.any { hint -> name.startsWith(hint) }
+            }
+            .flatMap { it.inetAddresses.toList() }
+            .filterIsInstance<Inet4Address>()
+            .filterNot { it.isLoopbackAddress }
+            .mapNotNull { it.hostAddress }
+            .filterNot { it.startsWith(P2P_GROUP_PREFIX) }
+            .distinct()
+    }.getOrNull().orEmpty()
+
+    /**
      * 现在有没有**可用于局域网直连**的地址。
      *
-     * 这是"走局域网还是走 Wi-Fi Direct"的判据，所以必须严：
-     * - **蜂窝不算**：关掉 Wi-Fi 之后设备往往还挂着流量，`10.x` 那种运营商内网地址
-     *   仍然在 [all] 里 —— 只看"有没有 IP"会被误判成"有网络"，于是死活不建组（踩过）；
-     * - **Wi-Fi Direct 自己的网段也不算**：否则刚建完组就被判成"有网了"、立刻拆掉，
-     *   来回打架。
+     * ⚠️ 判断只能看"接口上有没有地址"，**不能看 `ConnectivityManager` 的活动网络** ——
+     * Wi-Fi Direct 的组同样报 `TRANSPORT_WIFI`，建完组会被判成"有局域网了"、
+     * 然后立刻把自己拆掉，表现就是**二维码闪一下就不见了 / Wi-Fi Direct 用不了**（踩过）。
      *
-     * 判据分两层：当前活动网络得是 Wi-Fi / 以太网，**并且**确实存在一个不属于群主网段的地址。
+     * 蜂窝[接口](CELLULAR_INTERFACE_HINTS)不算，P2P 群主网段也不算；
+     * 而热点（`softap0` 之类）**算** —— 那正是接收端开热点时合法的局域网地址。
      */
-    fun hasLan(context: Context): Boolean {
-        val manager = context.applicationContext
-            .getSystemService(ConnectivityManager::class.java) ?: return false
-        val active = manager.activeNetwork ?: return false
-        val capabilities = manager.getNetworkCapabilities(active) ?: return false
-        val onWifiOrEthernet =
-            capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ||
-                capabilities.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)
-        if (!onWifiOrEthernet) return false
-        return all().any { address -> !address.startsWith(P2P_GROUP_PREFIX) }
-    }
+    fun hasLan(): Boolean = lanAddresses().isNotEmpty()
 
     /** Wi-Fi Direct 群主的固定网段。 */
     private const val P2P_GROUP_PREFIX = "192.168.49."
+
+    /**
+     * 蜂窝数据接口的常见前缀。
+     *
+     * 这些接口上的地址（多为 `10.x`）对局域网直连毫无意义 —— 对端根本到不了，
+     * 但它们的网段看起来又很像内网，所以必须按接口名排除，不能只看地址。
+     */
+    private val CELLULAR_INTERFACE_HINTS =
+        listOf("rmnet", "ccmni", "pdp", "wwan", "seth", "clat", "v4-rmnet")
 }
 
 /**
