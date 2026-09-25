@@ -71,10 +71,12 @@ import com.mirror.cast.CaptureSpec
 import com.mirror.cast.LocalAddress
 import com.mirror.cast.MirrorApplication
 import com.mirror.cast.NetworkWatcher
+import com.mirror.cast.ProbeResponder
 import com.mirror.cast.SessionState
 import com.mirror.cast.discovery.CastLink
 import com.mirror.cast.discovery.CastTarget
 import com.mirror.cast.discovery.ConnectCode
+import com.mirror.cast.discovery.ProbeReply
 import com.mirror.cast.p2p.WifiP2pLink
 import com.mirror.cast.qr.QrCode
 import com.mirror.cast.web.ReceiverSession
@@ -111,6 +113,18 @@ fun ReceiverContent(onFullscreenChange: (Boolean) -> Unit = {}) {
             portProvider = { session.signalingPort },
             deviceName = deviceName,
         )
+    }
+
+    // UDP 广播之外的第二个"门牌"：发送端主动扫端口时也能找到我们。
+    // 两条路并存，谁通了都算通 —— 广播几乎瞬时但可能被环境吃掉，扫端口慢但很实在。
+    val responder = remember(session) {
+        ProbeResponder(scope) {
+            ProbeReply(
+                deviceName = deviceName,
+                signalingPort = session.signalingPort,
+                code = code,
+            )
+        }
     }
 
     /**
@@ -237,6 +251,7 @@ fun ReceiverContent(onFullscreenChange: (Boolean) -> Unit = {}) {
         p2p.start()
         session.prepare()
         broadcaster.start()
+        responder.start()
         session.start(scope)
         // 进这一页就把 Wi-Fi Direct 组建起来 —— 这是默认连法，不等按钮、不等用户操作
         if (p2pGranted) {
@@ -276,6 +291,7 @@ fun ReceiverContent(onFullscreenChange: (Boolean) -> Unit = {}) {
         onDispose {
             networkWatcher.stop()
             broadcaster.stop()
+            responder.stop()
             p2p.stop()
             hotspot.stop()
             session.detachRenderer()
@@ -336,7 +352,12 @@ fun ReceiverContent(onFullscreenChange: (Boolean) -> Unit = {}) {
                     code = code,
                     deviceName = deviceName,
                     qr = qrImage,
-                    statusLine = diagnostics.line(),
+                    statusLine = "本机 ${LocalAddress.summary()} · " +
+                        (
+                            responder.failureReason?.let { "应答失败 $it" }
+                                ?: "应答端口 ${responder.port}"
+                            ) +
+                        " · " + diagnostics.line(),
                     hotspotActive = hotspot.running,
                     hotspotDetail = hotspotError
                         ?: hotspotInfo?.let { "${it.displayName} / 密码 ${it.password}" },
