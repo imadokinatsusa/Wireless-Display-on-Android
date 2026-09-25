@@ -238,11 +238,16 @@ fun ReceiverContent(onFullscreenChange: (Boolean) -> Unit = {}) {
         // 想用 Wi-Fi Direct 时，卡片下面有「建组」按钮，由用户自己决定。
     }
 
-    // 断开之后清掉渲染器里的最后一帧：否则画面停在最后一帧，
-    // 看着像"还在投"，实际已经断了
-    LaunchedEffect(state) {
+    // 断开之后：清掉渲染器里的最后一帧，并**立刻拆掉 Wi-Fi Direct 组**。
+    //
+    // 拆组要抢在"App 退出"之前 —— 它占着 Wi-Fi 射频，还会挡住别的用 P2P 的功能
+    // （实测是「一加互传」）。所以只要不在投屏状态，就马上把它还回去。
+    LaunchedEffect(state, p2pStatus.groupOwnerAddress) {
         if (state !is SessionState.Streaming) {
             renderer?.clearImage()
+            if (p2pStatus.groupOwnerAddress != null) {
+                p2p.stop()
+            }
         }
     }
 

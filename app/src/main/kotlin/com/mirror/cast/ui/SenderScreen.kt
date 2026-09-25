@@ -249,6 +249,14 @@ fun SenderContent(lastCrash: String? = null) {
         }
     }
 
+    // 投屏一结束就把 Wi-Fi Direct 组还回去：它占着射频，还会挡住别的用 P2P 的功能
+    // （实测是「一加互传」）。不等 App 退出才拆。
+    LaunchedEffect(active, p2pStatus.groupOwnerAddress) {
+        if (active == null && p2pStatus.groupOwnerAddress != null) {
+            p2p.stop()
+        }
+    }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
