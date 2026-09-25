@@ -238,11 +238,18 @@ fun ReceiverContent(onFullscreenChange: (Boolean) -> Unit = {}) {
         broadcaster.start()
         responder.start()
         session.start(scope)
-        // 进这一页就把 Wi-Fi Direct 组建起来 —— 这是默认连法，不等按钮、不等用户操作
-        if (p2pGranted) {
-            p2p.createGroup()
-        } else {
-            p2pPermissionLauncher.launch(p2pPermission)
+        // ⚠️ 只在**真的一个可用网络都没有**时才自动建组。
+        //
+        // 手机/平板基本都是单射频：自动建组会把本机从 Wi-Fi 上拽下来
+        // （地址变成 192.168.49.1），而发送端还留在 Wi-Fi 网段 ——
+        // 结果就是"连不上、没画面"（踩过）。想手动用 Wi-Fi Direct 的话，
+        // 卡片下面就是「建组」按钮，点它才建。
+        if (localIp == null) {
+            if (p2pGranted) {
+                p2p.createGroup()
+            } else {
+                p2pPermissionLauncher.launch(p2pPermission)
+            }
         }
     }
 
