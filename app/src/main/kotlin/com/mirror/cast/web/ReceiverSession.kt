@@ -1,6 +1,7 @@
 package com.mirror.cast.web
 
 import com.mirror.cast.CastSession
+import com.mirror.cast.LocalAddress
 import com.mirror.cast.Diagnostics
 import com.mirror.cast.SessionState
 import com.mirror.cast.signal.SignalingChannel
@@ -191,7 +192,7 @@ class ReceiverSession(
                 _state.value = SessionState.Streaming("发送端")
                 _diagnostics.update { it.copy(state = "接收中") }
             },
-            onFailed = { reason -> fail(reason) },
+            onFailed = { reason -> fail("$reason（本机 ${LocalAddress.summary()}）") },
             onRemoteVideo = { track -> bindRemoteVideo(track) },
         )
 
@@ -238,7 +239,7 @@ class ReceiverSession(
                 sdpSemantics = PeerConnection.SdpSemantics.UNIFIED_PLAN
                 bundlePolicy = PeerConnection.BundlePolicy.MAXBUNDLE
                 rtcpMuxPolicy = PeerConnection.RtcpMuxPolicy.REQUIRE
-                continualGatheringPolicy = PeerConnection.ContinualGatheringPolicy.GATHER_ONCE
+                continualGatheringPolicy = PeerConnection.ContinualGatheringPolicy.GATHER_CONTINUALLY
                 // 抖动缓冲调小：默认 50 包（约 1 秒）会让声音明显滞后、看着不同步
                 audioJitterBufferMaxPackets = 12
                 audioJitterBufferFastAccelerate = true

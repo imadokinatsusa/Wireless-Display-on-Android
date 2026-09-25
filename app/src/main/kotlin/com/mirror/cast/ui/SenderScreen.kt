@@ -50,6 +50,8 @@ import com.mirror.cast.CaptureSpec
 import com.mirror.cast.Discovery
 import com.mirror.cast.FailedSession
 import com.mirror.cast.HotspotController
+import com.mirror.cast.LocalAddress
+import com.mirror.cast.NetworkWatcher
 import com.mirror.cast.MirrorService
 import com.mirror.cast.QualityAdjustable
 import com.mirror.cast.SessionRegistry
@@ -79,6 +81,13 @@ fun SenderContent(lastCrash: String? = null) {
     var showBitrate by remember { mutableStateOf(false) }
     var showDetails by remember { mutableStateOf(false) }
     val hotspot = remember(context) { HotspotController(context) }
+    // 网络接口一变（开/关热点、切 Wi-Fi）就重启发现：否则 UDP socket 还绑在旧接口上
+    val networkWatcher = remember(context) {
+        NetworkWatcher(context) {
+            discovery.stop()
+            discovery.start()
+        }
+    }
     var hotspotInfo by remember { mutableStateOf<HotspotController.HotspotInfo?>(null) }
     var hotspotError by remember { mutableStateOf<String?>(null) }
     var waitSeconds by remember { mutableIntStateOf(0) }
@@ -129,10 +138,12 @@ fun SenderContent(lastCrash: String? = null) {
 
     DisposableEffect(Unit) {
         discovery.start()
+        networkWatcher.start()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
         onDispose {
+            networkWatcher.stop()
             discovery.stop()
             hotspot.stop()
         }
@@ -306,6 +317,7 @@ fun SenderContent(lastCrash: String? = null) {
             if (showDetails) {
                 Text(
                     text = buildString {
+                        appendLine("本机地址 ${LocalAddress.summary()}")
                         appendLine("采集 ${spec.width}×${spec.height}（屏幕真实尺寸，不可缩放）")
                         appendLine("编码 ${encodeWidth}×${encodeHeight} @${fps}fps")
                         appendLine("画质 ${quality.label}（由接收端选择）")

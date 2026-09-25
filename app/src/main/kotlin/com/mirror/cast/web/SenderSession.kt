@@ -4,6 +4,7 @@ import android.content.Context
 import android.media.projection.MediaProjection
 import com.mirror.cast.CaptureSpec
 import com.mirror.cast.CastSession
+import com.mirror.cast.LocalAddress
 import com.mirror.cast.Diagnostics
 import com.mirror.cast.LinkStats
 import com.mirror.cast.QualityAdjustable
@@ -193,7 +194,7 @@ class SenderSession(
                 _diagnostics.update { it.copy(state = "投屏中") }
                 broadcastQualityState()
             },
-            onFailed = { reason -> fail(reason) },
+            onFailed = { reason -> fail("$reason（本机 ${LocalAddress.summary()}）") },
             onRemoteVideo = { /* 发送端不接收画面 */ },
         )
 
@@ -209,7 +210,7 @@ class SenderSession(
                 sdpSemantics = PeerConnection.SdpSemantics.UNIFIED_PLAN
                 bundlePolicy = PeerConnection.BundlePolicy.MAXBUNDLE
                 rtcpMuxPolicy = PeerConnection.RtcpMuxPolicy.REQUIRE
-                continualGatheringPolicy = PeerConnection.ContinualGatheringPolicy.GATHER_ONCE
+                continualGatheringPolicy = PeerConnection.ContinualGatheringPolicy.GATHER_CONTINUALLY
                 // 屏幕内容场景关掉 CPU 过载检测：它按摄像头场景调优，投屏时只会白白降帧
                 enableCpuOveruseDetection = false
                 screencastMinBitrate = MIN_SCREENCAST_BITRATE

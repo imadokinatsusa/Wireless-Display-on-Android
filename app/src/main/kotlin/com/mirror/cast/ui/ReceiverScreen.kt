@@ -11,7 +11,6 @@ import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -24,13 +23,11 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AspectRatio
 import androidx.compose.material.icons.filled.Cast
 import androidx.compose.material.icons.filled.CenterFocusStrong
-import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.FullscreenExit
 import androidx.compose.material.icons.filled.HighQuality
 import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Wifi
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -63,11 +60,12 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import com.mirror.cast.Broadcaster
 import com.mirror.cast.CaptureSpec
+import com.mirror.cast.LocalAddress
 import com.mirror.cast.MirrorApplication
+import com.mirror.cast.NetworkWatcher
 import com.mirror.cast.SessionState
 import com.mirror.cast.discovery.ConnectCode
 import com.mirror.cast.web.ReceiverSession
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import org.webrtc.RendererCommon
 import org.webrtc.SurfaceViewRenderer
@@ -75,12 +73,16 @@ import org.webrtc.SurfaceViewRenderer
 /**
  * 接收端内容（底部页签之一）。
  *
- * 两种形态共用同一块画面（渲染器始终在，切换不会重建）：
- * - **等待中**：屏幕中央一张深色卡片 —— 连接码、下一步提示、Wi-Fi 设置按钮；
- * - **已连接**：自动进全屏，控制层只有图标（画质/帧率/比例/复位），点画面显隐、3 秒淡出。
+ * **风格与发送端统一**：小屏下就是同一套 iOS 卡片语法 ——
+ * 顶部标题、中间画面卡片、底部一张功能卡片（图标行 + 展开的勾选项）。
  *
- * 分工：**画质与帧率在这里调**（看画面的人最清楚卡不卡、糊不糊），
- * 通过信令发回发送端；码率上限由发送端设定，这里只显示预算。
+ * 形态：
+ * - **默认小屏**（所有操作都在这里做）：全屏 / 画质 / 帧率 / 比例 / 复位；
+ * - **全屏 = 视频播放器**：画面铺满、不显示任何功能按钮，只在右下角留「退出全屏」。
+ *
+ * 实现要点：两种形态用**同一份画面槽**（同一个 VideoSurface 调用点），
+ * 只改外层容器与 padding —— 切换全屏时 `SurfaceViewRenderer` 不会被重建，
+ * 画面不会重新起播。
  */
 @Composable
 fun ReceiverContent(onFullscreenChange: (Boolean) -> Unit = {}) {
@@ -99,14 +101,22 @@ fun ReceiverContent(onFullscreenChange: (Boolean) -> Unit = {}) {
         )
     }
 
+    // 网络接口一变就重启广播：接收端换了接口（连上热点）后必须重新广播，否则发送端搜不到
+    val networkWatcher = remember(context) {
+        NetworkWatcher(context) {
+            broadcaster.stop()
+            broadcaster.start()
+        }
+    }
+
     var renderer by remember { mutableStateOf<SurfaceViewRenderer?>(null) }
     val zoomState = remember { mutableStateOf(1f) }
     val offsetXState = remember { mutableStateOf(0f) }
     val offsetYState = remember { mutableStateOf(0f) }
 
+    // 默认小屏：一开始不要全屏
     var fullscreen by remember { mutableStateOf(false) }
     var fillScreen by remember { mutableStateOf(false) }
-    var controlsVisible by remember { mutableStateOf(true) }
     var expandedRow by remember { mutableStateOf(ExpandedRow.None) }
 
     var qualityName by remember { mutableStateOf(CaptureSpec.DEFAULT_QUALITY.name) }
@@ -116,18 +126,10 @@ fun ReceiverContent(onFullscreenChange: (Boolean) -> Unit = {}) {
     val configuration = LocalConfiguration.current
 
     LaunchedEffect(session) {
+        networkWatcher.start()
         session.prepare()
         broadcaster.start()
         session.start(scope)
-    }
-
-    // 一开始投屏：自动全屏、收起按钮
-    LaunchedEffect(state) {
-        if (state is SessionState.Streaming) {
-            fullscreen = true
-            controlsVisible = false
-            expandedRow = ExpandedRow.None
-        }
     }
 
     // 全屏状态同步给外壳（它会隐藏底部切换栏）
@@ -160,17 +162,11 @@ fun ReceiverContent(onFullscreenChange: (Boolean) -> Unit = {}) {
         )
     }
 
-    LaunchedEffect(controlsVisible, fullscreen, expandedRow) {
-        if (fullscreen && controlsVisible && expandedRow == ExpandedRow.None) {
-            delay(3_000)
-            controlsVisible = false
-        }
-    }
-
     SystemBarsEffect(hidden = fullscreen)
 
     DisposableEffect(session) {
         onDispose {
+            networkWatcher.stop()
             broadcaster.stop()
             session.detachRenderer()
             renderer?.let { view -> runCatching { view.release() } }
@@ -186,46 +182,69 @@ fun ReceiverContent(onFullscreenChange: (Boolean) -> Unit = {}) {
         offsetYState.value = 0f
     }
 
-    Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
-        VideoSurface(
-            application = application,
-            session = session,
-            zoomState = zoomState,
-            offsetXState = offsetXState,
-            offsetYState = offsetYState,
-            onRenderer = { renderer = it },
-            onTap = { controlsVisible = !controlsVisible },
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(if (fullscreen) Color.Black else MaterialTheme.colorScheme.background),
+    ) {
+        // ★ 同一个画面槽：全屏与小屏只改外层 padding 与圆角
+        Box(
             modifier = Modifier
                 .fillMaxSize()
-                .clipToBounds(),
-        )
-
-        // 等待中：中央深色卡片
-        if (state !is SessionState.Streaming) {
-            ConnectionCard(
-                code = code,
-                deviceName = deviceName,
-                statusLine = diagnostics.line(),
-                onWifiSettings = {
-                    runCatching {
-                        context.startActivity(
-                            Intent(Settings.ACTION_WIFI_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                .padding(
+                    if (fullscreen) {
+                        androidx.compose.foundation.layout.PaddingValues(0.dp)
+                    } else {
+                        androidx.compose.foundation.layout.PaddingValues(
+                            start = 16.dp,
+                            end = 16.dp,
+                            top = 66.dp,
+                            bottom = 150.dp,
                         )
-                    }
-                },
-                modifier = Modifier.align(Alignment.Center),
+                    },
+                )
+                .clip(RoundedCornerShape(if (fullscreen) 0.dp else 14.dp)),
+        ) {
+            VideoSurface(
+                application = application,
+                session = session,
+                zoomState = zoomState,
+                offsetXState = offsetXState,
+                offsetYState = offsetYState,
+                onRenderer = { renderer = it },
+                onTap = { reset() },
+                modifier = Modifier
+                    .fillMaxSize()
+                    .clipToBounds(),
             )
+
+            if (state !is SessionState.Streaming && !fullscreen) {
+                ConnectionCard(
+                    code = code,
+                    deviceName = deviceName,
+                    statusLine = diagnostics.line(),
+                    onWifiSettings = {
+                        runCatching {
+                            context.startActivity(
+                                Intent(Settings.ACTION_WIFI_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                            )
+                        }
+                    },
+                    modifier = Modifier.align(Alignment.Center),
+                )
+            }
         }
 
-        if (controlsVisible && state is SessionState.Streaming) {
+        if (fullscreen) {
+            // 视频播放器形态：只有右下角一个退出按钮
             IconButton(
                 onClick = { fullscreen = false },
                 modifier = Modifier
-                    .align(Alignment.TopStart)
-                    .padding(14.dp)
-                    .size(40.dp)
+                    .align(Alignment.BottomEnd)
+                    .padding(20.dp)
+                    .size(44.dp)
                     .clip(CircleShape)
-                    .background(Color(0x661C1C1E)),
+                    .background(Color(0x801C1C1E)),
             ) {
                 Icon(
                     imageVector = Icons.Filled.FullscreenExit,
@@ -233,92 +252,113 @@ fun ReceiverContent(onFullscreenChange: (Boolean) -> Unit = {}) {
                     tint = Color.White,
                 )
             }
-
-            GlassPanel(
+        } else {
+            // 小屏：顶部标题、底部功能卡片 —— 与发送端同一套卡片语法
+            Column(
                 modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .fillMaxWidth(),
+                    .fillMaxSize()
+                    .padding(horizontal = 6.dp),
             ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(2.dp),
-                ) {
-                    ControlIcon(
-                        icon = if (fullscreen) Icons.Filled.FullscreenExit else Icons.Filled.Fullscreen,
-                        description = if (fullscreen) "小窗" else "全屏",
-                    ) {
-                        fullscreen = !fullscreen
-                        expandedRow = ExpandedRow.None
-                    }
-                    ControlIcon(
-                        icon = Icons.Filled.HighQuality,
-                        description = "画质",
-                        active = expandedRow == ExpandedRow.Quality,
-                    ) {
-                        expandedRow =
-                            if (expandedRow == ExpandedRow.Quality) ExpandedRow.None else ExpandedRow.Quality
-                    }
-                    ControlIcon(
-                        icon = Icons.Filled.Speed,
-                        description = "帧率",
-                        active = expandedRow == ExpandedRow.FrameRate,
-                    ) {
-                        expandedRow =
-                            if (expandedRow == ExpandedRow.FrameRate) ExpandedRow.None else ExpandedRow.FrameRate
-                    }
-                    ControlIcon(
-                        icon = Icons.Filled.AspectRatio,
-                        description = if (fillScreen) "填充" else "适应",
-                        active = fillScreen,
-                    ) {
-                        fillScreen = !fillScreen
-                    }
-                    ControlIcon(icon = Icons.Filled.CenterFocusStrong, description = "复位") { reset() }
-                    Spacer(modifier = Modifier.weight(1f))
-                    ControlIcon(icon = Icons.Filled.Close, description = "关闭画面") {
-                        controlsVisible = false
-                    }
+                MirrorTopBar(title = "接收显示")
+
+                if (state !is SessionState.Streaming) {
+                    Text(
+                        text = "连接码 ${ConnectCode.pretty(code)} · 在发送端点「$deviceName」",
+                        modifier = Modifier.padding(start = 14.dp, bottom = 4.dp),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 }
 
-                if (expandedRow == ExpandedRow.Quality) {
-                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        CaptureSpec.Quality.entries.forEach { tier ->
-                            FilterChip(
-                                selected = tier.name == qualityName,
-                                onClick = {
-                                    qualityName = tier.name
+                Spacer(modifier = Modifier.weight(1f))
+
+                SettingsGroup("画面") {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 10.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceEvenly,
+                    ) {
+                        SmallIconButton(icon = Icons.Filled.Fullscreen, description = "全屏") {
+                            fullscreen = true
+                            expandedRow = ExpandedRow.None
+                        }
+                        SmallIconButton(
+                            icon = Icons.Filled.HighQuality,
+                            description = "画质",
+                            active = expandedRow == ExpandedRow.Quality,
+                        ) {
+                            expandedRow =
+                                if (expandedRow == ExpandedRow.Quality) ExpandedRow.None else ExpandedRow.Quality
+                        }
+                        SmallIconButton(
+                            icon = Icons.Filled.Speed,
+                            description = "帧率",
+                            active = expandedRow == ExpandedRow.FrameRate,
+                        ) {
+                            expandedRow =
+                                if (expandedRow == ExpandedRow.FrameRate) ExpandedRow.None else ExpandedRow.FrameRate
+                        }
+                        SmallIconButton(
+                            icon = Icons.Filled.AspectRatio,
+                            description = if (fillScreen) "填充" else "适应",
+                            active = fillScreen,
+                        ) {
+                            fillScreen = !fillScreen
+                        }
+                        SmallIconButton(
+                            icon = Icons.Filled.CenterFocusStrong,
+                            description = "复位",
+                        ) { reset() }
+                    }
+
+                    when (expandedRow) {
+                        ExpandedRow.Quality -> CaptureSpec.Quality.entries.forEachIndexed { index, tier ->
+                            CheckRow(
+                                title = "${tier.label} · 上限 ${tier.maxBitrate / 1_000_000}Mbps",
+                                checked = tier.name == qualityName,
+                                showDivider = index < CaptureSpec.Quality.entries.lastIndex,
+                            ) {
+                                qualityName = tier.name
+                                expandedRow = ExpandedRow.None
+                                if (state is SessionState.Streaming) {
                                     scope.launch { session.requestQuality(qualityName, fpsValue) }
-                                },
-                                label = { Text(tier.label) },
-                            )
+                                }
+                            }
                         }
-                    }
-                }
 
-                if (expandedRow == ExpandedRow.FrameRate) {
-                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        CaptureSpec.FrameRateTier.entries.forEach { tier ->
+                        ExpandedRow.FrameRate -> CaptureSpec.FrameRateTier.entries.forEachIndexed { index, tier ->
                             val target = CaptureSpec.resolveFps(tier, context.displayRefreshRateCompat())
-                            FilterChip(
-                                selected = target == fpsValue,
-                                onClick = {
-                                    fpsValue = target
-                                    scope.launch { session.requestQuality(qualityName, target) }
+                            CheckRow(
+                                title = if (tier == CaptureSpec.FrameRateTier.FollowDisplay) {
+                                    "跟随屏幕（${context.displayRefreshRateCompat().toInt()}Hz）"
+                                } else {
+                                    tier.label
                                 },
-                                label = { Text(tier.label) },
-                            )
+                                checked = target == fpsValue,
+                                showDivider = index < CaptureSpec.FrameRateTier.entries.lastIndex,
+                            ) {
+                                fpsValue = target
+                                expandedRow = ExpandedRow.None
+                                if (state is SessionState.Streaming) {
+                                    scope.launch { session.requestQuality(qualityName, target) }
+                                }
+                            }
                         }
+
+                        ExpandedRow.None -> Unit
                     }
                 }
 
                 Text(
                     text = "上限 " +
                         (if (session.remoteBitrateLimitKbps > 0) "${session.remoteBitrateLimitKbps / 1000}Mbps" else "自动") +
-                        " · " + diagnostics.line(),
+                        (if (state is SessionState.Streaming) " · " + diagnostics.line() else ""),
+                    modifier = Modifier.padding(start = 14.dp, top = 8.dp, bottom = 10.dp),
                     style = MaterialTheme.typography.labelSmall,
                     fontFamily = FontFamily.Monospace,
-                    color = Color(0xFF8A8A8A),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
         }
@@ -327,7 +367,36 @@ fun ReceiverContent(onFullscreenChange: (Boolean) -> Unit = {}) {
 
 private enum class ExpandedRow { None, Quality, FrameRate }
 
-/** 等待中的中央卡片：连接码 + 下一步 + Wi-Fi 设置。 */
+/** 功能行用的小图标按钮：底色走主题，与发送端的图标块同一语言。 */
+@Composable
+private fun SmallIconButton(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    description: String,
+    active: Boolean = false,
+    onClick: () -> Unit,
+) {
+    IconButton(
+        onClick = onClick,
+        modifier = Modifier
+            .size(46.dp)
+            .clip(CircleShape)
+            .background(
+                if (active) {
+                    MaterialTheme.colorScheme.primary.copy(alpha = 0.16f)
+                } else {
+                    MaterialTheme.colorScheme.outline.copy(alpha = 0.25f)
+                },
+            ),
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = description,
+            tint = if (active) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+        )
+    }
+}
+
+/** 等待中的提示卡：连接码 + 下一步 + Wi-Fi 设置。 */
 @Composable
 private fun ConnectionCard(
     code: String,
@@ -338,18 +407,18 @@ private fun ConnectionCard(
 ) {
     Column(
         modifier = modifier
-            .padding(26.dp)
+            .padding(20.dp)
             .clip(RoundedCornerShape(22.dp))
             .background(Color(0xFF1C1C1E))
             .border(1.dp, Color(0x1FFFFFFF), RoundedCornerShape(22.dp))
-            .padding(horizontal = 26.dp, vertical = 22.dp),
+            .padding(horizontal = 24.dp, vertical = 20.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         Icon(
             imageVector = Icons.Filled.Cast,
             contentDescription = null,
-            modifier = Modifier.size(34.dp),
+            modifier = Modifier.size(32.dp),
             tint = Color(0xFF0A84FF),
         )
         Text(
@@ -379,53 +448,6 @@ private fun ConnectionCard(
             Icon(imageVector = Icons.Filled.Wifi, contentDescription = "Wi-Fi 设置", tint = Color.White)
         }
     }
-}
-
-/** 控制层图标按钮：圆形、半透明，选中时高亮。 */
-@Composable
-private fun ControlIcon(
-    icon: androidx.compose.ui.graphics.vector.ImageVector,
-    description: String,
-    active: Boolean = false,
-    onClick: () -> Unit,
-) {
-    IconButton(
-        onClick = onClick,
-        modifier = Modifier
-            .size(40.dp)
-            .clip(CircleShape)
-            .background(if (active) Color(0x44FFFFFF) else Color(0x22FFFFFF)),
-    ) {
-        Icon(
-            imageVector = icon,
-            contentDescription = description,
-            tint = if (active) Color.White else Color(0xFFDDDDDD),
-        )
-    }
-}
-
-/**
- * 磨砂玻璃面板：半透明深色 + 圆角 + 细描边。
- *
- * 真正的背景模糊需要 API 31+ 且对 SurfaceView（独立图层）无效，
- * 所以这里用"半透明 + 圆角 + 亮边"做出同样的观感。
- */
-@Composable
-private fun GlassPanel(
-    modifier: Modifier = Modifier,
-    content: @Composable ColumnScope.() -> Unit,
-) {
-    val shape = RoundedCornerShape(20.dp)
-    Column(
-        modifier = modifier
-            .padding(horizontal = 10.dp, vertical = 10.dp)
-            .clip(shape)
-            .background(Color(0xB0121212))
-            .border(1.dp, Color(0x22FFFFFF), shape)
-            .padding(horizontal = 12.dp, vertical = 10.dp),
-        verticalArrangement = Arrangement.spacedBy(6.dp),
-        content = content,
-    )
 }
 
 /** 全屏时隐藏系统栏（沉浸），退出时恢复。 */
