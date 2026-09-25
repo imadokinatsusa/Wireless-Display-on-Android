@@ -43,10 +43,6 @@ internal class PlaybackAudioCapturer(
     fun start(): Boolean {
         if (record != null) return true
         return try {
-            if (!projection.canProjectAudio()) {
-                onNote("系统不允许捕获播放音频，仅发送画面")
-                return false
-            }
             val captureConfig = AudioPlaybackCaptureConfiguration.Builder(projection)
                 .addMatchingUsage(AudioAttributes.USAGE_MEDIA)
                 .addMatchingUsage(AudioAttributes.USAGE_GAME)
@@ -96,7 +92,7 @@ internal class PlaybackAudioCapturer(
         val startPosition = buffer.position()
         return try {
             buffer.position(startPosition)
-            val read = source.read(buffer, bytesRead, AudioRecord.READ_NONBLOCKING)
+            val read = source.read(buffer, bytesRead, AudioRecord.READ_NON_BLOCKING)
             val filled = if (read > 0) read else 0
             if (filled < bytesRead) {
                 // 这一刻内录没有数据（例如正在播放的应用不允许被捕获）：

@@ -10,6 +10,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
@@ -79,6 +80,9 @@ class ReceiverSession(
         job = scope.launch {
             try {
                 runSession()
+            } catch (bye: PeerSaidBye) {
+                _state.value = SessionState.Closed
+                stop()
             } catch (error: Exception) {
                 fail("${error::class.java.simpleName}: ${error.message}")
             }
@@ -120,7 +124,7 @@ class ReceiverSession(
             onRemoteVideo = { track -> bindRemoteVideo(track) },
         )
 
-        for (message in accepted.incoming) {
+        accepted.incoming.collect { message ->
             when (message) {
                 is SignalingMessage.Offer -> handleOffer(message, observer)
                 is SignalingMessage.Candidate -> peerConnection?.let { connection ->
@@ -133,8 +137,7 @@ class ReceiverSession(
 
                 SignalingMessage.Bye -> {
                     _diagnostics.update { it.copy(state = "发送端已停止") }
-                    stop()
-                    return
+                    throw PeerSaidBye()
                 }
 
                 else -> Unit

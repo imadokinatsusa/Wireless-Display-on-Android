@@ -13,6 +13,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
@@ -76,6 +77,9 @@ class SenderSession(
         pumpJob = scope.launch {
             try {
                 runSession()
+            } catch (bye: PeerSaidBye) {
+                _state.value = SessionState.Closed
+                stop()
             } catch (error: Exception) {
                 fail("${error::class.java.simpleName}: ${error.message}")
             }
@@ -162,7 +166,7 @@ class SenderSession(
         }
 
         // ── 6) 等 answer / 候选 ───────────────────────────────────────────────
-        for (message in signaling.incoming) {
+        signaling.incoming.collect { message ->
             when (message) {
                 is SignalingMessage.Answer -> runtime.onSignaling {
                     connection.setRemoteAwait(
@@ -178,8 +182,7 @@ class SenderSession(
 
                 SignalingMessage.Bye -> {
                     _state.value = SessionState.Closed
-                    stop()
-                    return
+                    throw PeerSaidBye()
                 }
 
                 else -> Unit
@@ -268,3 +271,7 @@ class SenderSession(
         const val STREAM_ID = "mirror"
     }
 }
+
+
+/** 对端主动说 Bye：正常收尾，不是失败。 */
+internal class PeerSaidBye : Exception()

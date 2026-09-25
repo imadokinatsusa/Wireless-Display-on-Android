@@ -113,9 +113,7 @@ class WebRtcRuntime(private val context: Context) {
     suspend fun shutdown() = onSignaling {
         factory?.dispose()
         factory = null
-        encoderFactory?.dispose()
         encoderFactory = null
-        decoderFactory?.dispose()
         decoderFactory = null
         audioDeviceModule?.release()
         audioDeviceModule = null
