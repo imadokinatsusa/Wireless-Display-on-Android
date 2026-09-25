@@ -321,6 +321,12 @@ class SenderSession(
         const val AUDIO_TRACK_ID = "mirror-audio"
         const val STREAM_ID = "mirror"
 
+        /** 投屏下限码率（1.5Mbps）：低于这个数文字就开始糊。 */
+        const val MIN_SCREENCAST_BITRATE = 1_500_000
+
+        /** 音频抖动缓冲包数：默认 50 包（约 1 秒）对实时投屏太滞后。 */
+        const val AUDIO_JITTER_BUFFER_PACKETS = 12
+
         /** 自动重试次数与间隔：局域网里等对端就绪，最多等这么久。 */
         const val MAX_ATTEMPTS = 20
         const val RETRY_DELAY_MILLIS = 2_000L

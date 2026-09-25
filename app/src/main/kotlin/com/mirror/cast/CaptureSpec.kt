@@ -24,6 +24,9 @@ object CaptureSpec {
     /** 编码输出的长边上限：全尺寸编码会把中端机帧率压死。 */
     private const val MAX_ENCODE_LONG_EDGE = 1920
 
+    /** 编码器色度采样要求 16 的倍数。 */
+    private const val ALIGNMENT = 16
+
     data class Spec(
         val width: Int,
         val height: Int,
