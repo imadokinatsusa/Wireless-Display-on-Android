@@ -32,7 +32,6 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -56,7 +55,7 @@ import com.mirror.cast.QualityAdjustable
 import com.mirror.cast.SessionRegistry
 import com.mirror.cast.discovery.CastLink
 import com.mirror.cast.discovery.ConnectCode
-import kotlinx.coroutines.delay
+import com.mirror.cast.discovery.DiscoveredDevice
 import kotlinx.coroutines.launch
 
 /**
@@ -134,7 +133,6 @@ fun SenderContent(lastCrash: String? = null) {
             discovery.start()
         }
     }
-    var waitSeconds by remember { mutableIntStateOf(0) }
 
     val adjustable = active as? QualityAdjustable
     val spec = remember { CaptureSpec.from(context.resources.displayMetrics) }
@@ -143,13 +141,6 @@ fun SenderContent(lastCrash: String? = null) {
     val (encodeWidth, encodeHeight) = CaptureSpec.encodeSize(spec.width, spec.height, quality.maxLongEdge)
     val budget = if (bitrateTier.kbps > 0) bitrateTier.kbps * 1000 else Int.MAX_VALUE
     val totalBitRate = minOf(quality.maxBitrate, CaptureSpec.bitRateFor(encodeWidth, encodeHeight, fps), budget)
-
-    LaunchedEffect(Unit) {
-        while (true) {
-            delay(1_000)
-            waitSeconds += 1
-        }
-    }
 
     val projectionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult(),
@@ -357,12 +348,8 @@ fun SenderContent(lastCrash: String? = null) {
                     SettingsRow(
                         icon = Icons.Filled.PhoneAndroid,
                         iconTint = ColorGray,
-                        title = "搜索中…",
-                        subtitle = when {
-                            discovery.failureReason != null -> "没搜到设备（${discovery.failureReason}）"
-                            waitSeconds > 8 -> "没搜到？让接收端点「开热点」，这台连上去就行"
-                            else -> "已等 ${waitSeconds}s"
-                        },
+                        title = "等待设备",
+                        subtitle = "在另一台设备上打开本应用、切到「接收」页就行",
                         showDivider = false,
                     )
                 } else {

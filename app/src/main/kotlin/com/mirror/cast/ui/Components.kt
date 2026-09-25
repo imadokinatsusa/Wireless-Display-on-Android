@@ -78,15 +78,15 @@ fun SettingsGroup(
         if (title != null) {
             Text(
                 text = title,
-                modifier = Modifier.padding(start = 30.dp, bottom = 6.dp),
-                style = MaterialTheme.typography.labelMedium,
+                modifier = Modifier.padding(start = 26.dp, bottom = 4.dp),
+                style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .clip(RoundedCornerShape(14.dp))
+                .clip(RoundedCornerShape(12.dp))
                 .background(MaterialTheme.colorScheme.surface),
             content = content,
         )
@@ -116,24 +116,17 @@ fun SettingsRow(
             modifier = Modifier
                 .fillMaxWidth()
                 .then(if (onClick != null) Modifier.clickable { onClick() } else Modifier)
-                .padding(horizontal = 14.dp, vertical = 10.dp),
+                .padding(horizontal = 14.dp, vertical = 11.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            horizontalArrangement = Arrangement.spacedBy(14.dp),
         ) {
-            Box(
-                modifier = Modifier
-                    .size(29.dp)
-                    .clip(RoundedCornerShape(7.dp))
-                    .background(iconTint),
-                contentAlignment = Alignment.Center,
-            ) {
-                Icon(
-                    imageVector = icon,
-                    contentDescription = null,
-                    modifier = Modifier.size(18.dp),
-                    tint = Color.White,
-                )
-            }
+            // 扁平化：图标不再套彩色圆角方块，只留一个着色的图标本身
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                modifier = Modifier.size(22.dp),
+                tint = iconTint,
+            )
             Column(modifier = Modifier.weight(1f)) {
                 Text(text = title, style = MaterialTheme.typography.bodyLarge)
                 if (subtitle != null) {
@@ -155,7 +148,7 @@ fun SettingsRow(
         }
         if (showDivider) {
             HorizontalDivider(
-                modifier = Modifier.padding(start = 55.dp),
+                modifier = Modifier.padding(start = 50.dp),
                 thickness = 0.5.dp,
                 color = MaterialTheme.colorScheme.outline,
             )
@@ -248,5 +241,5 @@ fun CheckRow(
 /** 分组之间的垂直间距。 */
 @Composable
 fun GroupSpacer() {
-    Spacer(modifier = Modifier.height(18.dp))
+    Spacer(modifier = Modifier.height(14.dp))
 }
