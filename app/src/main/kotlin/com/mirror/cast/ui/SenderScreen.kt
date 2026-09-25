@@ -2,6 +2,7 @@ package com.mirror.cast.ui
 
 import android.Manifest
 import android.app.Activity
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.media.projection.MediaProjectionManager
 import android.os.Build
@@ -42,8 +43,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
-import com.journeyapps.barcodescanner.ScanContract
-import com.journeyapps.barcodescanner.ScanOptions
+import com.mirror.cast.qr.ScanActivity
 import com.mirror.cast.CaptureSpec
 import com.mirror.cast.Discovery
 import com.mirror.cast.FailedSession
@@ -182,8 +182,11 @@ fun SenderContent(lastCrash: String? = null) {
         }
     }
 
-    val scanner = rememberLauncherForActivityResult(ScanContract()) { result ->
-        val contents = result.contents
+    val scanner = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult(),
+    ) { result ->
+        if (result.resultCode != Activity.RESULT_OK) return@rememberLauncherForActivityResult
+        val contents = result.data?.getStringExtra(ScanActivity.EXTRA_RESULT)
         if (contents == null) return@rememberLauncherForActivityResult // 用户取消了扫码
         val target = CastLink.decode(contents)
         if (target == null) {
@@ -246,13 +249,7 @@ fun SenderContent(lastCrash: String? = null) {
     LaunchedEffect(wantScan, cameraGranted) {
         if (wantScan && cameraGranted) {
             wantScan = false
-            scanner.launch(
-                ScanOptions()
-                    .setDesiredBarcodeFormats(ScanOptions.QR_CODE)
-                    .setPrompt("对准接收端的二维码")
-                    .setBeepEnabled(false)
-                    .setOrientationLocked(false),
-            )
+            scanner.launch(Intent(context, ScanActivity::class.java))
         }
     }
 
