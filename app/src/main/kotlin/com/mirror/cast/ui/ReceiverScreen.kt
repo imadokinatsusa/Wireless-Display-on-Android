@@ -26,7 +26,6 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Cast
-import androidx.compose.material.icons.filled.CompareArrows
 import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.FullscreenExit
 import androidx.compose.material.icons.filled.HighQuality
@@ -239,14 +238,11 @@ fun ReceiverContent(onFullscreenChange: (Boolean) -> Unit = {}) {
         session.prepare()
         broadcaster.start()
         session.start(scope)
-        // 只在**真的一个网络都没有**时才自动建组：Wi-Fi Direct 组会占住 Wi-Fi 射频，
-        // 已经有同一 Wi-Fi / 热点可用时再建它，只会把投屏拖慢（这就是"卡卡的"来源）
-        if (localIp == null) {
-            if (p2pGranted) {
-                p2p.createGroup()
-            } else {
-                p2pPermissionLauncher.launch(p2pPermission)
-            }
+        // 进这一页就把 Wi-Fi Direct 组建起来 —— 这是默认连法，不等按钮、不等用户操作
+        if (p2pGranted) {
+            p2p.createGroup()
+        } else {
+            p2pPermissionLauncher.launch(p2pPermission)
         }
     }
 
@@ -346,15 +342,6 @@ fun ReceiverContent(onFullscreenChange: (Boolean) -> Unit = {}) {
                         ?: hotspotInfo?.let { "${it.displayName} / 密码 ${it.password}" },
                     p2pActive = p2pStatus.groupOwnerAddress != null,
                     p2pDetail = p2pStatus.message,
-                    onWifiDirect = {
-                        if (p2pStatus.groupOwnerAddress != null) {
-                            p2p.stop()
-                        } else if (p2pGranted) {
-                            wantP2pGroup = true
-                        } else {
-                            p2pPermissionLauncher.launch(p2pPermission)
-                        }
-                    },
                     onHotspot = {
                         if (hotspot.running) {
                             hotspot.stop()
@@ -551,7 +538,6 @@ private fun ConnectionCard(
     hotspotDetail: String?,
     p2pActive: Boolean,
     p2pDetail: String?,
-    onWifiDirect: () -> Unit,
     onHotspot: () -> Unit,
     onWifiSettings: () -> Unit,
     modifier: Modifier = Modifier,
@@ -609,20 +595,7 @@ private fun ConnectionCard(
             ) {
                 Icon(imageVector = Icons.Filled.Wifi, contentDescription = "Wi-Fi 设置", tint = Color.White)
             }
-            // Wi-Fi 直连：不用路由器、不用热点、不用流量 —— 系统在两端之间拉一条专属链路
-            IconButton(
-                onClick = onWifiDirect,
-                modifier = Modifier
-                    .size(40.dp)
-                    .clip(CircleShape)
-                    .background(if (p2pActive) Color(0x5530D158) else Color(0x22FFFFFF)),
-            ) {
-                Icon(
-                    imageVector = Icons.Filled.CompareArrows,
-                    contentDescription = "Wi-Fi 直连（离线也能用）",
-                    tint = if (p2pActive) Color(0xFF30D158) else Color.White,
-                )
-            }
+            // Wi-Fi Direct 是**默认连法**，进来就自动建组了，所以这里没有它的按钮
             IconButton(
                 onClick = onHotspot,
                 modifier = Modifier
