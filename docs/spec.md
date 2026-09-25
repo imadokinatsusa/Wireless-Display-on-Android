@@ -88,5 +88,6 @@ UDP 广播收不到、Beacon 长度算错、前台服务时序竞争、虚拟屏
   无法直接注入 `AudioPlaybackCaptureConfiguration` 的 `AudioRecord`。候选路线：
   (a) 自定义 `AudioDeviceModule` 包装；(b) 库内是否已有 `CustomAudioSource` 一类公开 API。
   → 由技术侦察定稿后写入本规格与对应工单；**这条不通，M1 不发版**（见验收标准）。
-- **B. `arm64-v8a + armeabi-v7a` 下 APK 体积实测**（预估 25~35MB），若过大再回退单 ABI。
+- **B. APK 体积（已实测）**：`arm64-v8a + armeabi-v7a` 双 ABI 下 **41.8MB**（CI run #30 产物）。
+  如觉偏大，可回退单 `arm64-v8a`（约省 12MB），代价是放弃 32 位老设备。
 - **C. 会话描述长度与 TCP 信令超时参数**（实测后固化）。
