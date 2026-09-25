@@ -79,6 +79,27 @@ object CaptureSpec {
         P360("360P", 640, 1_200_000),
     }
 
+    /**
+     * 发送端的**码率上限**：这是"这条链路能花多少带宽"的最终决定权。
+     *
+     * 分工：发送端定上限，接收端在上限之内调画质与帧率。
+     * 最终编码码率 = min(上限, 画质档位上限, 按分辨率/帧率估算值)。
+     */
+    enum class BitrateTier(val label: String, val kbps: Int) {
+        /** 自动：完全由画质档位与帧率推算。 */
+        Auto("自动", 0),
+        Low("2M", 2_000),
+        Medium("4M", 4_000),
+        High("6M", 6_000),
+        Higher("8M", 8_000),
+        Max("12M", 12_000),
+    }
+
+    val DEFAULT_BITRATE_TIER: BitrateTier = BitrateTier.Auto
+
+    fun bitrateTierOf(name: String?): BitrateTier =
+        BitrateTier.entries.firstOrNull { it.name == name } ?: DEFAULT_BITRATE_TIER
+
     /** 默认档位：1080P。 */
     val DEFAULT_QUALITY: Quality = Quality.P1080
 

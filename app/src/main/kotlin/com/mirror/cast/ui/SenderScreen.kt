@@ -3,13 +3,16 @@ package com.mirror.cast.ui
 import android.Manifest
 import android.app.Activity
 import android.content.Context
+import android.content.Intent
 import android.media.projection.MediaProjectionManager
 import android.os.Build
+import android.provider.Settings
 import android.view.WindowManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -48,14 +51,16 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 /**
- * 发送端：选画质与帧率 → 选连法 → 点一台接收端 → 系统授权 → 交给前台服务。
+ * 发送端：定码率上限 → 选画质与帧率 → 选连法 → 点一台接收端 → 授权 → 交给前台服务。
  *
- * 两种连法随时可切：
- * - **同一 Wi-Fi**（默认）：最省事，但路由器开了 AP/客户端隔离时会搜不到设备；
- * - **发送端热点**：本机开一个"仅本地热点"，接收端连上来，链路必然互通（代价是没外网）。
+ * **带宽分工**：发送端定**码率上限**（这条链路能花多少带宽），画质与帧率在上限之内调
+ * —— 接收端也能调，但它只发画质与帧率，不碰上限。
  *
- * 画质三件事说清楚：**采集**永远是屏幕真实尺寸；**编码**按档位缩放；
- * **帧率**上限是屏幕刷新率（虚拟屏不会凭空多出帧）；**总码率**由档位与帧率共同决定。
+ * **两种连法**：
+ * - 同一 Wi-Fi（默认）：最省事，但路由器开了 AP/客户端隔离时会搜不到设备；
+ * - 发送端热点：本机开"仅本地热点"，接收端连上来。
+ *   注意多数手机**不能同时连 Wi-Fi 又开热点**，系统会拒绝（错误码 3）——
+ *   这时界面会直接告诉你先关 Wi-Fi，或改用系统设置里的便携式热点。
  */
 @Composable
 fun SenderScreen(onBack: () -> Unit) {
@@ -67,6 +72,7 @@ fun SenderScreen(onBack: () -> Unit) {
     var pending: DiscoveredDevice? by remember { mutableStateOf(null) }
     var quality by remember { mutableStateOf(CaptureSpec.DEFAULT_QUALITY) }
     var frameTier by remember { mutableStateOf(CaptureSpec.DEFAULT_FRAME_RATE_TIER) }
+    var bitrateTier by remember { mutableStateOf(CaptureSpec.DEFAULT_BITRATE_TIER) }
     var autoQuality by remember { mutableStateOf(true) }
     val hotspot = remember(context) { HotspotController(context) }
     var hotspotInfo by remember { mutableStateOf<HotspotController.HotspotInfo?>(null) }
@@ -78,7 +84,9 @@ fun SenderScreen(onBack: () -> Unit) {
     val spec = remember { CaptureSpec.from(context.resources.displayMetrics) }
     val fps = CaptureSpec.resolveFps(frameTier, displayHz)
     val (encodeWidth, encodeHeight) = CaptureSpec.encodeSize(spec.width, spec.height, quality.maxLongEdge)
-    val totalBitRate = minOf(quality.maxBitrate, CaptureSpec.bitRateFor(encodeWidth, encodeHeight, fps))
+    val estimated = CaptureSpec.bitRateFor(encodeWidth, encodeHeight, fps)
+    val budget = if (bitrateTier.kbps > 0) bitrateTier.kbps * 1000 else Int.MAX_VALUE
+    val totalBitRate = minOf(quality.maxBitrate, estimated, budget)
 
     LaunchedEffect(Unit) {
         while (true) {
@@ -108,6 +116,7 @@ fun SenderScreen(onBack: () -> Unit) {
             spec = spec,
             quality = quality,
             frameRate = fps,
+            bitrateKbps = bitrateTier.kbps,
         )
     }
 
@@ -135,12 +144,28 @@ fun SenderScreen(onBack: () -> Unit) {
     ) {
         ScreenHeader(title = "发送屏幕", onBack = onBack)
 
+        // ── 码率上限：发送端的权力 ────────────────────────────────────────────
+        Text(text = "码率上限（这条链路能花多少带宽）", style = MaterialTheme.typography.titleSmall)
+        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            CaptureSpec.BitrateTier.entries.forEach { tier ->
+                Button(
+                    contentPadding = PaddingValues(horizontal = 10.dp),
+                    onClick = {
+                        bitrateTier = tier
+                        adjustable?.let { target -> scope.launch { target.setBitrateLimit(tier.kbps) } }
+                    },
+                ) {
+                    Text(if (tier == bitrateTier) "● ${tier.label}" else tier.label)
+                }
+            }
+        }
+
         // ── 画质 ──────────────────────────────────────────────────────────────
         Text(text = "画质", style = MaterialTheme.typography.titleSmall)
         Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
             CaptureSpec.Quality.entries.forEach { item ->
                 Button(
-                    contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 10.dp),
+                    contentPadding = PaddingValues(horizontal = 10.dp),
                     onClick = {
                         quality = item
                         adjustable?.let { target -> scope.launch { target.setQuality(item) } }
@@ -156,7 +181,7 @@ fun SenderScreen(onBack: () -> Unit) {
         Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
             CaptureSpec.FrameRateTier.entries.forEach { tier ->
                 Button(
-                    contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 10.dp),
+                    contentPadding = PaddingValues(horizontal = 10.dp),
                     onClick = {
                         frameTier = tier
                         val target = CaptureSpec.resolveFps(tier, displayHz)
@@ -181,10 +206,7 @@ fun SenderScreen(onBack: () -> Unit) {
                     adjustable?.let { target -> scope.launch { target.setAutoQuality(enabled) } }
                 },
             )
-            Text(
-                text = "按网络自动切换画质",
-                style = MaterialTheme.typography.bodySmall,
-            )
+            Text(text = "按网络自动切换画质", style = MaterialTheme.typography.bodySmall)
         }
 
         // ── 参数说明：画质 / 帧率 / 总码率 ────────────────────────────────────
@@ -192,11 +214,9 @@ fun SenderScreen(onBack: () -> Unit) {
             text = buildString {
                 appendLine("采集 ${spec.width}×${spec.height}（屏幕真实尺寸，不可缩放）")
                 appendLine("编码 ${encodeWidth}×${encodeHeight} @${fps}fps")
-                appendLine("画质 ${quality.label}（档位码率上限 ${quality.maxBitrate / 1_000_000}Mbps）")
+                appendLine("画质 ${quality.label}（档位上限 ${quality.maxBitrate / 1_000_000}Mbps）")
+                appendLine("码率上限 ${if (bitrateTier.kbps > 0) "${bitrateTier.kbps / 1000}Mbps" else "自动"}")
                 append("总码率 约 ${"%.1f".format(totalBitRate / 1_000_000.0)}Mbps")
-                if (frameTier == CaptureSpec.FrameRateTier.FollowDisplay) {
-                    append("（帧率上限 = 本机屏幕 ${displayHz.toInt()}Hz）")
-                }
             },
             style = MaterialTheme.typography.bodySmall,
             fontFamily = FontFamily.Monospace,
@@ -210,10 +230,16 @@ fun SenderScreen(onBack: () -> Unit) {
                     hotspot.stop()
                     hotspotInfo = null
                     hotspotError = null
+                    // 网络接口切回来了：发现要重新绑定，否则收不到广播
+                    discovery.stop()
+                    discovery.start()
                 } else {
                     hotspot.start { info, error ->
                         hotspotInfo = info
                         hotspotError = error
+                        // 开热点会切换网络接口，同一原因：重绑
+                        discovery.stop()
+                        discovery.start()
                     }
                 }
             },
@@ -237,7 +263,10 @@ fun SenderScreen(onBack: () -> Unit) {
             )
         }
         hotspotError?.let { error ->
-            Text(text = "热点启动失败：$error", style = MaterialTheme.typography.bodySmall)
+            Text(text = error, style = MaterialTheme.typography.bodySmall)
+            Button(onClick = { openWirelessSettings(context) }) {
+                Text("去系统设置手动开热点")
+            }
         }
 
         // ── 设备 ──────────────────────────────────────────────────────────────
@@ -277,6 +306,15 @@ fun SenderScreen(onBack: () -> Unit) {
                 Text("停止投屏")
             }
         }
+    }
+}
+
+/** 跳到系统的无线设置（热点开不起来时的出路）。 */
+private fun openWirelessSettings(context: Context) {
+    runCatching {
+        context.startActivity(
+            Intent(Settings.ACTION_WIRELESS_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+        )
     }
 }
 

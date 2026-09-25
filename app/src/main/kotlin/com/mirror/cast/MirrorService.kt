@@ -64,6 +64,7 @@ class MirrorService : Service() {
         val dpi = intent.getIntExtra(EXTRA_DPI, 0)
         val qualityName = intent.getStringExtra(EXTRA_QUALITY)
         val frameRate = intent.getIntExtra(EXTRA_FRAME_RATE, CaptureSpec.DEFAULT_FRAME_RATE)
+        val bitrateKbps = intent.getIntExtra(EXTRA_BITRATE_KBPS, 0)
 
         if (projectionData == null || host == null || port <= 0 || code == null || width <= 0 || height <= 0) {
             reportFailure("启动参数不完整（授权结果 / 对端地址 / 分辨率）")
@@ -108,6 +109,7 @@ class MirrorService : Service() {
                 code = code,
                 initialQuality = CaptureSpec.qualityOf(qualityName),
                 initialFrameRate = frameRate,
+                initialBitrateKbps = bitrateKbps,
             )
             session = created
             SessionRegistry.set(created)
@@ -195,6 +197,7 @@ class MirrorService : Service() {
         private const val EXTRA_DPI = "dpi"
         private const val EXTRA_QUALITY = "quality"
         private const val EXTRA_FRAME_RATE = "frame_rate"
+        private const val EXTRA_BITRATE_KBPS = "bitrate_kbps"
 
         /** 启动投屏：界面把屏幕授权结果与对端地址交给服务，其余全在服务里发生。 */
         fun start(
@@ -207,6 +210,7 @@ class MirrorService : Service() {
             spec: CaptureSpec.Spec,
             quality: CaptureSpec.Quality,
             frameRate: Int,
+            bitrateKbps: Int,
         ) {
             val intent = Intent(context, MirrorService::class.java).apply {
                 putExtra(EXTRA_RESULT_CODE, resultCode)
@@ -219,6 +223,7 @@ class MirrorService : Service() {
                 putExtra(EXTRA_DPI, spec.densityDpi)
                 putExtra(EXTRA_QUALITY, quality.name)
                 putExtra(EXTRA_FRAME_RATE, frameRate)
+                putExtra(EXTRA_BITRATE_KBPS, bitrateKbps)
             }
             ContextCompat.startForegroundService(context, intent)
         }

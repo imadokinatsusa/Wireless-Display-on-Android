@@ -290,6 +290,13 @@ fun ReceiverScreen(onBack: () -> Unit) {
                 }
 
                 Text(
+                    text = "发送端预算：" +
+                        (if (session.remoteBitrateLimitKbps > 0) "${session.remoteBitrateLimitKbps / 1000}Mbps" else "自动") +
+                        " · 生效 ${session.remoteQuality.ifEmpty { "-" }} / ${session.remoteFrameRate}fps",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = Color(0xFF808080),
+                )
+                Text(
                     text = diagnostics.line(),
                     style = MaterialTheme.typography.labelSmall,
                     fontFamily = FontFamily.Monospace,

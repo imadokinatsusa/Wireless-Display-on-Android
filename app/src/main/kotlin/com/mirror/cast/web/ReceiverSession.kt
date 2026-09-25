@@ -31,11 +31,11 @@ import org.webrtc.VideoTrack
  *
  * 行为准则：**接收端是"守在那里"的一方**。
  * - 一次等待超时不算失败，继续等（诊断行会写已等多久）；
- * - 发送端停下来之后，只释放这一个连接、**回去继续等下一个**，而不是把自己关掉；
+ * - 发送端停下来之后，只释放这一个连接、**回去继续等下一个**；
  * - 真正的"停止"只发生在界面退出时（[shutdown]）。
  *
- * 它还承担一件"反向"的事：画质与帧率是发送端的编码参数，但用户是在**看画面这台设备**
- * 上做决定，所以接收端通过信令连接把 [SignalingMessage.QualityRequest] 发回去。
+ * 带宽分工：发送端定**码率上限**（[remoteBitrateLimitKbps]），接收端只能在上限之内
+ * 调画质与帧率 —— 通过 [requestQuality] 把请求发回发送端。
  */
 class ReceiverSession(
     private val runtime: WebRtcRuntime,
@@ -67,12 +67,15 @@ class ReceiverSession(
     var signalingPort: Int = 0
         private set
 
-    /** 当前生效（或最近请求）的画质档位名与帧率，用于界面回显。 */
+    /** 发送端回传的生效参数（接收端只读）：画质档位名、帧率、码率上限（kbps，0 = 自动）。 */
     @Volatile
-    var requestedQuality: String = ""
+    var remoteQuality: String = ""
 
     @Volatile
-    var requestedFrameRate: Int = 0
+    var remoteFrameRate: Int = 0
+
+    @Volatile
+    var remoteBitrateLimitKbps: Int = 0
 
     /** 开始监听，返回实际端口。 */
     suspend fun prepare(): Int {
@@ -94,14 +97,12 @@ class ReceiverSession(
     }
 
     /**
-     * 请求发送端换画质/帧率。
+     * 请求发送端换画质/帧率（在发送端给的码率上限之内）。
      *
-     * 走的是已经建立的信令连接（本来就双向），所以不需要任何额外的控制通道。
-     * 失败（还没连上）时返回 false，界面据此提示"尚未连接"。
+     * 走的是已经建立的信令连接，所以不需要额外的控制通道。
+     * 返回 false 表示还没连上，界面据此提示。
      */
     suspend fun requestQuality(qualityName: String, fps: Int): Boolean {
-        requestedQuality = qualityName
-        requestedFrameRate = fps
         val target = channel ?: return false
         return target.send(SignalingMessage.QualityRequest(quality = qualityName, frameRate = fps)).isSuccess
     }
@@ -202,6 +203,21 @@ class ReceiverSession(
                         connection.addIceCandidate(
                             IceCandidate(message.sdpMid, message.sdpMLineIndex, message.candidate),
                         )
+                    }
+                }
+
+                // 发送端告诉我们当前参数与预算
+                is SignalingMessage.QualityState -> {
+                    remoteQuality = message.quality
+                    remoteFrameRate = message.frameRate
+                    remoteBitrateLimitKbps = message.bitrateLimitKbps
+                    val budget = if (message.bitrateLimitKbps > 0) {
+                        "上限 ${message.bitrateLimitKbps / 1000}Mbps"
+                    } else {
+                        "码率自动"
+                    }
+                    _diagnostics.update {
+                        it.copy(note = "发送端：${message.quality} / ${message.frameRate}fps · $budget")
                     }
                 }
 

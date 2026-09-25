@@ -49,9 +49,9 @@ import kotlin.coroutines.resume
  * - 媒体栈调用都走 [WebRtcRuntime.onSignaling]（signaling 线程纪律）；
  * - ICE 候选由回调线程推入队列，再由协程搬给信令连接。
  *
- * 画质分两层：**采集尺寸锁在屏幕真实尺寸**（Android 14 的要求），可调的是
- * **编码输出**（分辨率 + 码率 + 帧率）。三件事都能被两方调整：
- * 发送端本机的界面，以及接收端发来的 [SignalingMessage.QualityRequest]。
+ * **带宽分工**：采集尺寸锁在屏幕真实尺寸（Android 14 的要求），编码输出可调；
+ * 发送端定**码率上限**（这条链路能花多少带宽），画质与帧率则由发送端或接收端在上限之内调。
+ * 最终编码码率 = min(码率上限, 画质档位上限, 按分辨率与帧率估算值)。
  */
 class SenderSession(
     private val context: Context,
@@ -63,6 +63,7 @@ class SenderSession(
     private val code: String,
     initialQuality: CaptureSpec.Quality = CaptureSpec.DEFAULT_QUALITY,
     initialFrameRate: Int = CaptureSpec.DEFAULT_FRAME_RATE,
+    initialBitrateKbps: Int = 0,
 ) : CastSession, QualityAdjustable {
 
     private val _state = MutableStateFlow<SessionState>(SessionState.Connecting("$host:$signalingPort"))
@@ -98,6 +99,9 @@ class SenderSession(
     private var frameRateValue: Int = initialFrameRate
 
     @Volatile
+    private var bitrateLimitKbpsValue: Int = initialBitrateKbps
+
+    @Volatile
     private var autoQualityValue: Boolean = true
 
     @Volatile
@@ -113,6 +117,8 @@ class SenderSession(
     override val quality: CaptureSpec.Quality get() = qualityValue
 
     override val frameRate: Int get() = frameRateValue
+
+    override val bitrateLimitKbps: Int get() = bitrateLimitKbpsValue
 
     override val autoQuality: Boolean get() = autoQualityValue
 
@@ -185,6 +191,7 @@ class SenderSession(
             onConnected = {
                 _state.value = SessionState.Streaming("$host:$signalingPort")
                 _diagnostics.update { it.copy(state = "投屏中") }
+                broadcastQualityState()
             },
             onFailed = { reason -> fail(reason) },
             onRemoteVideo = { /* 发送端不接收画面 */ },
@@ -225,7 +232,7 @@ class SenderSession(
         }
         peerConnection = connection
 
-        // ── 4) 采集（虚拟屏 = 屏幕真实尺寸；编码输出 = 当前档位） ──────────────
+        // ── 4) 采集（虚拟屏 = 屏幕真实尺寸；编码输出 = 当前参数） ──────────────
         startCapture()
         startStatsPolling()
 
@@ -251,7 +258,7 @@ class SenderSession(
                     )
                 }
 
-                // 接收端在看画面，由它决定清晰度/流畅度更合理
+                // 接收端只能在上限之内调画质与帧率
                 is SignalingMessage.QualityRequest -> {
                     _diagnostics.update {
                         it.copy(state = "接收端请求：${message.quality} / ${message.frameRate}fps")
@@ -292,21 +299,27 @@ class SenderSession(
         capturer = created
     }
 
-    // ── 画质与帧率：档位 + 自适应 + 接收端请求 ──────────────────────────────────
+    // ── 码率上限 / 画质 / 帧率 ─────────────────────────────────────────────────
 
     private fun currentEncodeSize(): Pair<Int, Int> =
         CaptureSpec.encodeSize(spec.width, spec.height, qualityValue.maxLongEdge)
 
+    /** 当前生效的编码码率：三个约束取最小。 */
+    private fun effectiveBitRate(width: Int, height: Int): Int {
+        val estimated = CaptureSpec.bitRateFor(width, height, frameRateValue)
+        val budget = if (bitrateLimitKbpsValue > 0) bitrateLimitKbpsValue * 1000 else Int.MAX_VALUE
+        return minOf(qualityValue.maxBitrate, estimated, budget)
+    }
+
     /**
-     * 把当前档位写进编码器参数。
+     * 把当前参数写进编码器。
      *
      * **必须在 signaling 线程调用**（调用点都在 [WebRtcRuntime.onSignaling] 里）。
-     * 码率取"档位上限"与"按分辨率与帧率估算"的较小值：两个约束都要满足。
      */
     private fun applyVideoParams() {
         val sender = videoSender ?: return
         val (width, height) = currentEncodeSize()
-        val bitRate = minOf(qualityValue.maxBitrate, CaptureSpec.bitRateFor(width, height, frameRateValue))
+        val bitRate = effectiveBitRate(width, height)
         runCatching {
             val params = sender.parameters
             params.degradationPreference = RtpParameters.DegradationPreference.MAINTAIN_FRAMERATE
@@ -327,6 +340,7 @@ class SenderSession(
             source.adaptOutputFormat(width, height, frameRateValue)
             applyVideoParams()
         }
+        broadcastQualityState()
         return true
     }
 
@@ -338,7 +352,19 @@ class SenderSession(
             source.adaptOutputFormat(width, height, frameRateValue)
             applyVideoParams()
         }
+        broadcastQualityState()
         return true
+    }
+
+    /**
+     * 设定码率上限（kbps，0 = 自动）。
+     *
+     * 这是发送端独有的权力：接收端只能在这个预算里选画质与帧率。
+     */
+    override suspend fun setBitrateLimit(kbps: Int) {
+        bitrateLimitKbpsValue = kbps.coerceAtLeast(0)
+        runtime.onSignaling { applyVideoParams() }
+        broadcastQualityState()
     }
 
     override suspend fun setAutoQuality(enabled: Boolean) {
@@ -350,11 +376,32 @@ class SenderSession(
         }
     }
 
+    /** 把当前参数回传给接收端，让它知道预算与生效值。 */
+    private fun broadcastQualityState() {
+        val target = channel ?: return
+        scope?.launch {
+            runCatching {
+                target.send(
+                    SignalingMessage.QualityState(
+                        quality = qualityValue.name,
+                        frameRate = frameRateValue,
+                        bitrateLimitKbps = bitrateLimitKbpsValue,
+                    ),
+                )
+            }
+        }
+    }
+
     private fun reportResolution(width: Int, height: Int, bitRate: Int) {
+        val budgetLabel = if (bitrateLimitKbpsValue > 0) {
+            "上限 ${bitrateLimitKbpsValue / 1000}Mbps"
+        } else {
+            "上限 自动"
+        }
         _diagnostics.update {
             it.copy(
                 resolution = "${spec.width}×${spec.height} → ${width}×${height} @${frameRateValue}fps / " +
-                    "${bitRate / 1_000_000}.${(bitRate % 1_000_000) / 100_000}Mbps · ${qualityValue.label}",
+                    "${bitRate / 1_000_000}.${(bitRate % 1_000_000) / 100_000}Mbps · ${qualityValue.label} · $budgetLabel",
             )
         }
     }

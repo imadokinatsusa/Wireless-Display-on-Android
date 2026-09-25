@@ -42,6 +42,12 @@ interface QualityAdjustable {
     /** 换帧率（接收端也能通过反向请求触发）。 */
     suspend fun setFrameRate(fps: Int): Boolean
 
+    /** 发送端设定的码率上限（kbps；0 = 自动）。这是链路的带宽预算。 */
+    val bitrateLimitKbps: Int
+
+    /** 由发送端设定码率上限（接收端只读、不设）。 */
+    suspend fun setBitrateLimit(kbps: Int)
+
     /** 最近一次的网络观测值（丢包率 0..1、往返时延毫秒、估算码率 kbps）。 */
     val linkStats: LinkStats
 }

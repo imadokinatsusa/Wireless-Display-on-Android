@@ -14,8 +14,12 @@ import android.os.Looper
  * 这时候由发送端自己开一个热点、接收端连上来，链路就必然互通 ——
  * 上层（发现、信令、媒体）一个字节都不用改，因为大家还是在一个 IP 子网里。
  *
- * 代价：单芯片手机开热点后原 Wi-Fi 会断开、两端都失去外网。所以它是**备用连法**，
- * 不是默认连法。
+ * **但它经常开不起来**，而且原因几乎总是同一个：
+ * 多数手机是单射频，**不能同时"连着 Wi-Fi"又"开热点"**，系统会直接回
+ * `ERROR_INCOMPATIBLE_MODE`。所以这里把错误码翻成人话，并给出可执行的出路
+ * （先关 Wi-Fi，或改用系统设置里的便携式热点）。
+ *
+ * 代价：开热点后原 Wi-Fi 会断开、两端都失去外网，所以它是**备用连法**。
  */
 class HotspotController(private val context: Context) {
 
@@ -70,7 +74,7 @@ class HotspotController(private val context: Context) {
                     }
 
                     override fun onFailed(reason: Int) {
-                        val message = "热点启动失败（代码 $reason）：可能是位置权限未授予，或系统限制了热点"
+                        val message = describeFailure(reason)
                         failureReason = message
                         onResult(null, message)
                     }
@@ -78,7 +82,7 @@ class HotspotController(private val context: Context) {
                 Handler(Looper.getMainLooper()),
             )
         } catch (error: Exception) {
-            val message = "${error::class.java.simpleName}: ${error.message}"
+            val message = "${error::class.java.simpleName}: ${error.message} —— 可改用系统设置里的便携式热点"
             failureReason = message
             onResult(null, message)
         }
@@ -102,7 +106,26 @@ class HotspotController(private val context: Context) {
         info = null
     }
 
+    private fun describeFailure(reason: Int): String = when (reason) {
+        ERROR_NO_CHANNEL ->
+            "热点启动失败：没有可用信道。稍后再试，或改用系统设置里的便携式热点。"
+
+        ERROR_INCOMPATIBLE_MODE ->
+            "热点启动失败：当前模式不兼容 —— 多数手机不能同时连 Wi-Fi 又开热点。" +
+                "请先关闭 Wi-Fi，或直接用系统设置里的「便携式热点」再回来投屏。"
+
+        ERROR_TETHERING_DISALLOWED ->
+            "热点启动失败：本机策略禁止应用开热点。请到系统设置里手动开启「便携式热点」。"
+
+        else ->
+            "热点启动失败（错误码 $reason）。可以改用系统设置里的「便携式热点」再回来投屏。"
+    }
+
     private companion object {
         const val DEFAULT_SSID = "Mirror"
+
+        const val ERROR_NO_CHANNEL = 1
+        const val ERROR_INCOMPATIBLE_MODE = 3
+        const val ERROR_TETHERING_DISALLOWED = 4
     }
 }

@@ -33,14 +33,26 @@ sealed interface SignalingMessage {
     ) : SignalingMessage
 
     /**
-     * 接收端 → 发送端：换画质与帧率。
+     * 接收端 → 发送端：在上限之内换画质与帧率。
      *
-     * 这是本项目唯一的"反向控制"：**只调发送端的编码参数**，不注入任何输入事件
-     * （把触摸注回发送端是 M2 的事）。之所以能这么做，是因为信令连接本来就双向。
+     * 分工是这样定的：**发送端决定"能花多少带宽"（码率上限），
+     * 接收端决定"这些带宽怎么花"（画质 + 帧率）** —— 看画面的人最清楚卡不卡、糊不糊。
+     * 所以这条消息只带画质与帧率，**不带码率**；码率上限由发送端说了算。
      *
-     * `quality` 传档位名（字符串），不传枚举 —— 信令层不依赖 app 层的类型。
+     * `quality` 传档位名（字符串），信令层不依赖 app 层的类型。
      */
     data class QualityRequest(val quality: String, val frameRate: Int) : SignalingMessage
+
+    /**
+     * 发送端 → 接收端：当前生效的画质、帧率与**码率上限**。
+     *
+     * 接收端据此在界面上显示"预算"，并让它知道自己的选择被接受成了什么样。
+     */
+    data class QualityState(
+        val quality: String,
+        val frameRate: Int,
+        val bitrateLimitKbps: Int,
+    ) : SignalingMessage
 
     /** 结束会话。 */
     data object Bye : SignalingMessage
@@ -61,6 +73,8 @@ object SignalingCodec {
 
     private const val QUALITY_PREFIX = "QUALITY\t"
 
+    private const val QUALITY_STATE_PREFIX = "QUALITY_STATE\t"
+
     fun encode(message: SignalingMessage): ByteArray = when (message) {
         is SignalingMessage.Hello -> withHead("HELLO", message.code)
         is SignalingMessage.Offer -> withHead("OFFER", message.sdp)
@@ -70,6 +84,12 @@ object SignalingCodec {
 
         is SignalingMessage.QualityRequest ->
             withHead("$QUALITY_PREFIX${message.frameRate}", message.quality)
+
+        is SignalingMessage.QualityState ->
+            withHead(
+                "$QUALITY_STATE_PREFIX${message.frameRate}\t${message.bitrateLimitKbps}",
+                message.quality,
+            )
 
         SignalingMessage.Bye -> "BYE".toByteArray(Charsets.UTF_8)
     }
@@ -91,6 +111,14 @@ object SignalingCodec {
             head.startsWith(QUALITY_PREFIX) -> {
                 val fps = head.removePrefix(QUALITY_PREFIX).toIntOrNull() ?: return null
                 SignalingMessage.QualityRequest(quality = body, frameRate = fps)
+            }
+
+            head.startsWith(QUALITY_STATE_PREFIX) -> {
+                val parts = head.removePrefix(QUALITY_STATE_PREFIX).split('\t')
+                if (parts.size != 2) return null
+                val fps = parts[0].toIntOrNull() ?: return null
+                val kbps = parts[1].toIntOrNull() ?: return null
+                SignalingMessage.QualityState(quality = body, frameRate = fps, bitrateLimitKbps = kbps)
             }
 
             head.startsWith(CANDIDATE_PREFIX) -> {
