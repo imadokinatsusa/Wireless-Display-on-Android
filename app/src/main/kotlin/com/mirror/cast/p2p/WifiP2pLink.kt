@@ -5,12 +5,14 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.net.ConnectivityManager
+import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.wifi.WifiManager
 import android.net.wifi.WpsInfo
 import android.net.wifi.p2p.WifiP2pConfig
 import android.net.wifi.p2p.WifiP2pDevice
 import android.net.wifi.p2p.WifiP2pManager
+import android.os.Build
 import android.os.Looper
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -214,7 +216,16 @@ class WifiP2pLink(private val context: Context) {
      *
      * 绑定之后 WebRTC 才能看见并使用这条链路。返回是否绑定成功，界面据此显示进展。
      */
-    fun bindToGroup(): Boolean {
+    fun bindToGroup() {
+        // 先直接翻一遍（同步、快）：个别 ROM 会把 P2P 网络挂在 allNetworks 上。
+        if (bindByScanning()) return
+        // 翻不到就走官方入口申请 —— Wi-Fi Direct 的网络**默认不对普通 App 暴露**，
+        // 这正是 Android 10 起提供 WifiP2pManager.requestNetwork 的原因。
+        requestGroupNetwork()
+    }
+
+    /** 兜底路子：在 `allNetworks` 里翻找那条 P2P 网络。 */
+    private fun bindByScanning(): Boolean {
         val manager = context.applicationContext
             .getSystemService(ConnectivityManager::class.java) ?: return false
         val groupOwnerNow = _status.value.groupOwnerAddress
@@ -233,6 +244,56 @@ class WifiP2pLink(private val context: Context) {
         val bound = runCatching { manager.bindProcessToNetwork(target) }.getOrDefault(false)
         _status.update { it.copy(boundToGroup = bound) }
         return bound
+    }
+
+    /**
+     * 官方入口：向系统申请这条 P2P 网络的访问权，拿到后立刻绑定。
+     *
+     * 回调是**异步**的，所以绑定结果只能稍后经 [P2pStatus.boundToGroup] 和状态文字回报。
+     */
+    private fun requestGroupNetwork() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+            _status.update { it.copy(message = "系统版本过低，无法申请 P2P 网络（需要 Android 10+）") }
+            return
+        }
+        val wifiP2p = manager
+        val current = channel
+        if (wifiP2p == null || current == null) return
+
+        _status.update { it.copy(message = "正在向系统申请这条链路…") }
+        runCatching {
+            wifiP2p.requestNetwork(
+                current,
+                WifiP2pManager.NetworkRequest.Builder().build(),
+                object : WifiP2pManager.NetworkInfoListener {
+                    override fun onNetworkInfoAvailable(network: Network?) {
+                        if (network == null) {
+                            _status.update {
+                                it.copy(message = "系统拒绝给出 P2P 网络 —— 这条路走不通了")
+                            }
+                            return
+                        }
+                        val manager = context.applicationContext
+                            .getSystemService(ConnectivityManager::class.java)
+                        val bound = runCatching {
+                            manager?.bindProcessToNetwork(network) ?: false
+                        }.getOrDefault(false)
+                        _status.update {
+                            it.copy(
+                                boundToGroup = bound,
+                                message = if (bound) {
+                                    "已接管链路（官方申请成功）"
+                                } else {
+                                    "申请到了网络，但绑定失败"
+                                },
+                            )
+                        }
+                    }
+                },
+            )
+        }.onFailure {
+            _status.update { status -> status.copy(message = "申请链路失败：${it.message}") }
+        }
     }
 
     /** 解绑，把流量还给系统默认网络。 */
@@ -310,25 +371,15 @@ class WifiP2pLink(private val context: Context) {
                     }
                     // 链路一成就把它接管给本进程 —— 少这一步，媒体栈看不见这条链路：
                     // 信令能通（自己写的 Socket 走直连路由），画面却永远起不来。
-                    val bound = bindToGroup()
+                    // 结果是异步回来的，所以这里不拼"已接管"，让绑定结果自己写状态。
+                    bindToGroup()
                     _status.update {
                         it.copy(
-                            message = buildString {
-                                append(
-                                    if (info.isGroupOwner) {
-                                        "已建组，本机是群主（$address）"
-                                    } else {
-                                        "已加入对方的组（群主 $address）"
-                                    },
-                                )
-                                append(
-                                    if (bound) {
-                                        " · 已接管链路"
-                                    } else {
-                                        " · ⚠️ 链路接管失败，画面可能起不来"
-                                    },
-                                )
-                                if (info.isGroupOwner) append(" · 再点一次可拆")
+                            message = if (it.boundToGroup) {
+                                "已建组（$address）· 已接管链路"
+                            } else {
+                                (if (info.isGroupOwner) "已建组，本机是群主（$address）" else "已加入对方的组（群主 $address）") +
+                                    " · 正在申请链路…"
                             },
                         )
                     }
