@@ -2,8 +2,10 @@ package com.mirror.cast.ui
 
 import android.Manifest
 import android.app.Activity
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.wifi.WifiManager
 import android.os.Build
 import android.provider.Settings
 import android.view.WindowManager
@@ -32,7 +34,6 @@ import androidx.compose.material.icons.filled.FullscreenExit
 import androidx.compose.material.icons.filled.HighQuality
 import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Wifi
-import androidx.compose.material.icons.filled.WifiTethering
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -67,7 +68,6 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
-import com.mirror.cast.HotspotController
 import com.mirror.cast.CaptureSpec
 import com.mirror.cast.LocalAddress
 import com.mirror.cast.MirrorApplication
@@ -107,19 +107,6 @@ fun ReceiverContent(onFullscreenChange: (Boolean) -> Unit = {}) {
     val session = remember(code) { ReceiverSession(runtime = application.runtime, code = code) }
     val deviceName = remember { Build.MODEL ?: "Android" }
 
-    /**
-     * 热点由**接收端**开 —— 这条分工是刻意的，和 AirDroid 的规则一致：
-     * **开热点的那台必须是接收端，不能是投屏端。**
-     *
-     * 道理在角色：接收端本来就只需要"守在那里"，开热点对它只是多绑一个接口；
-     * 而发送端是最需要往外发数据的一方，让它同时扮演网关，路由与网络候选最容易出岔子。
-     * 接收端开热点后地址固定是 `192.168.43.1` 这类 softap 地址，而 [LocalAddress]
-     * 当初特意绕过 ConnectivityManager 去枚举 NetworkInterface，正是为了拿到它 ——
-     * 二维码会自动跟着变成这个地址。
-     */
-    val hotspot = remember(context) { HotspotController(context) }
-    var hotspotInfo by remember { mutableStateOf<HotspotController.HotspotInfo?>(null) }
-    var hotspotError by remember { mutableStateOf<String?>(null) }
 
     /**
      * Wi-Fi Direct 链路 —— **离线直连的首选**。
@@ -241,28 +228,21 @@ fun ReceiverContent(onFullscreenChange: (Boolean) -> Unit = {}) {
     }
 
     /**
-     * 按网络状况决定走哪条路 —— 两条是**互补**的：
+     * 进这一页先把网络准备好，但**不打扰主人、也不留任何痕迹**。
      *
-     * - **有局域网地址**（连着 Wi-Fi 或热点）：直接用那个地址，**不建组** ——
-     *   更快，也不占射频；
-     * - **一个地址都没有**（两台设备什么都没连）：**自动建 Wi-Fi Direct 组**。
-     *   这是"不连 Wi-Fi 也能投屏"的**唯一**办法 —— 系统会在两端之间拉一条专属链路，
-     *   本机成为群主、地址固定 `192.168.49.1`，二维码会自动换成它并带上 `p2p=1` 标记。
+     * 只做一件事：**Wi-Fi 开关关着的时候，把系统的 Wi-Fi 面板推出来**，
+     * 主人点一下就能开，然后回到应用继续。
      *
-     * 之所以跟着 `localIp` 变：主人可能先开着 Wi-Fi 扫了码，中途 Wi-Fi 断了，
-     * 这时得能自动切到 Wi-Fi Direct 上去。
+     * 为什么不能直接替主人打开：Android 10 起**禁止普通 App 开关 Wi-Fi**
+     * （`setWifiEnabled` 只对系统应用有效）。能做到的极限就是把开关递到主人面前。
      */
-    LaunchedEffect(hasLan, p2pGranted) {
+    LaunchedEffect(hasLan) {
         if (!hasLan) {
-            if (p2pGranted) {
-                p2p.start()
-                p2p.createGroup()
-            } else {
-                p2pPermissionLauncher.launch(p2pPermission)
+            val wifi = context.applicationContext
+                .getSystemService(Context.WIFI_SERVICE) as? WifiManager
+            if (wifi?.isWifiEnabled != true) {
+                launchWifiPanel(context)
             }
-        } else if (p2pStatus.groupOwnerAddress != null) {
-            // 又有局域网了就不需要 P2P 组，把它还回去（别占着「一加互传」要用的射频）
-            p2p.stop()
         }
     }
 
@@ -321,7 +301,6 @@ fun ReceiverContent(onFullscreenChange: (Boolean) -> Unit = {}) {
         onDispose {
             networkWatcher.stop()
             p2p.stop()
-            hotspot.stop()
             session.detachRenderer()
             renderer?.let { view -> runCatching { view.release() } }
             renderer = null
@@ -380,33 +359,8 @@ fun ReceiverContent(onFullscreenChange: (Boolean) -> Unit = {}) {
                     code = code,
                     deviceName = deviceName,
                     qr = qrImage,
-                    preparingHint = p2pStatus.message,
+                    preparingHint = null,
                     statusLine = diagnostics.line(),
-                    hotspotActive = hotspot.running,
-                    hotspotDetail = hotspotError
-                        ?: hotspotInfo?.let { "${it.displayName} / 密码 ${it.password}" },
-                    p2pActive = p2pStatus.groupOwnerAddress != null,
-                    p2pDetail = p2pStatus.message,
-                    onHotspot = {
-                        if (hotspot.running) {
-                            hotspot.stop()
-                            hotspotInfo = null
-                            hotspotError = null
-                        } else {
-                            hotspot.start { info, error ->
-                                hotspotInfo = info
-                                hotspotError = error
-                            }
-                        }
-                        // 开/关热点会换掉网络接口：广播必须重新绑定，否则发送端收不到
-                    },
-                    onWifiSettings = {
-                        runCatching {
-                            context.startActivity(
-                                Intent(Settings.ACTION_WIFI_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
-                            )
-                        }
-                    },
                     modifier = Modifier.align(Alignment.Center),
                 )
             }
@@ -582,12 +536,6 @@ private fun ConnectionCard(
     /** 没有二维码时显示的原因 —— 建组中、建组失败、还是别的，都要让主人看见。 */
     preparingHint: String?,
     statusLine: String,
-    hotspotActive: Boolean,
-    hotspotDetail: String?,
-    p2pActive: Boolean,
-    p2pDetail: String?,
-    onHotspot: () -> Unit,
-    onWifiSettings: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Column(
@@ -644,41 +592,9 @@ private fun ConnectionCard(
             fontFamily = FontFamily.Monospace,
             color = Color(0xFF8A8A8A),
         )
-        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            IconButton(
-                onClick = onWifiSettings,
-                modifier = Modifier
-                    .size(40.dp)
-                    .clip(CircleShape)
-                    .background(Color(0x22FFFFFF)),
-            ) {
-                Icon(imageVector = Icons.Filled.Wifi, contentDescription = "Wi-Fi 设置", tint = Color.White)
-            }
-            // Wi-Fi Direct 是**默认连法**，进来就自动建组了，所以这里没有它的按钮
-            IconButton(
-                onClick = onHotspot,
-                modifier = Modifier
-                    .size(40.dp)
-                    .clip(CircleShape)
-                    .background(if (hotspotActive) Color(0x5530D158) else Color(0x22FFFFFF)),
-            ) {
-                Icon(
-                    imageVector = Icons.Filled.WifiTethering,
-                    contentDescription = "开热点给发送端连",
-                    tint = if (hotspotActive) Color(0xFF30D158) else Color.White,
-                )
-            }
-        }
-        // 状态行：就绪了是绿的，其余用灰 —— 内容本身已经说明发生了什么
-        val detail = p2pDetail ?: hotspotDetail
-        if (detail != null) {
-            Text(
-                text = detail,
-                style = MaterialTheme.typography.labelSmall,
-                fontFamily = FontFamily.Monospace,
-                color = if (p2pActive || hotspotActive) Color(0xFF30D158) else Color(0xFF8A8A8A),
-            )
-        }
+        // 这里**刻意不放任何网络按钮**，也不出现"信道/热点/直连"这类字眼 ——
+        // 开 Wi-Fi、建链路都由页面在后台自己完成。
+        // 主人要做的只有三件事：出码 → 对方扫 → 连上。
     }
 }
 
@@ -707,6 +623,19 @@ private fun SystemBarsEffect(hidden: Boolean) {
             controller?.show(WindowInsetsCompat.Type.systemBars())
             window?.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         }
+    }
+}
+
+/**
+ * 拉起系统的 Wi-Fi 面板。
+ *
+ * 用它而不是跳设置页：它是个浮层，主人点一下开关就能直接回来，不用离开应用。
+ */
+private fun launchWifiPanel(context: Context) {
+    runCatching {
+        context.startActivity(
+            Intent(Settings.Panel.ACTION_WIFI).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+        )
     }
 }
 
