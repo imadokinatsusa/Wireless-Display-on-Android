@@ -488,6 +488,9 @@ class WifiP2pLink(private val context: Context) {
          * **点名具体频率**比"请求频段"硬实 —— 后者常被系统默不作声地忽略成 2.4GHz，
          * 而 2.4GHz 带 1080p 的投屏必然丢包、掉帧、糊。
          */
-        val FIVE_GHZ_FREQUENCIES = intArrayOf(5_180, 5_745)
+        // ⚠️ 必须是 `List<Int>`，**不能写成 `intArrayOf(...)`**：原始类型数组没有
+        // `mapNotNull`（`IntArray` 只有 `map` / `filter` 这些），写成 `intArrayOf`
+        // 会直接编译不过，而且报错会跑到调用处的返回类型上、看着毫不相干 —— CI 上炸过一次。
+        val FIVE_GHZ_FREQUENCIES = listOf(5_180, 5_745)
     }
 }
