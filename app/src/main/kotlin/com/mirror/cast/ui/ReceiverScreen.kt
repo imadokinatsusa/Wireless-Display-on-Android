@@ -69,6 +69,7 @@ import androidx.core.content.ContextCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import com.mirror.cast.CaptureSpec
+import com.mirror.cast.HotspotController
 import com.mirror.cast.LocalAddress
 import com.mirror.cast.MirrorApplication
 import com.mirror.cast.NetworkWatcher
@@ -131,6 +132,17 @@ fun ReceiverContent(onFullscreenChange: (Boolean) -> Unit = {}) {
      */
     val p2p = remember(context) { WifiP2pLink(context) }
     val p2pStatus by p2p.status.collectAsState()
+
+    /**
+     * 本地热点 —— **一个共同网络都没有时的唯一链路**。
+     *
+     * Wi-Fi Direct 那条撞墙了（组能建、信令能通，但媒体栈拿不到那条 P2P 网络）；
+     * 热点不一样：**连上来的那一端是普通 Wi-Fi 客户端**，地址在 `ConnectivityManager`
+     * 里，媒体栈看得见。名字和信道都由系统给（改不了，也不需要），
+     * 但凭证会随二维码传过去，对方一扫就自动连 —— 没人需要认出那个名字。
+     */
+    val hotspot = remember(context) { HotspotController(context) }
+    var hotspotInfo by remember { mutableStateOf<HotspotController.HotspotInfo?>(null) }
 
     /**
      * Wi-Fi Direct 的**运行时**权限。
@@ -215,21 +227,25 @@ fun ReceiverContent(onFullscreenChange: (Boolean) -> Unit = {}) {
         hasLan,
         localIp,
         session.signalingPort,
-        p2pStatus.groupOwnerAddress,
+        hotspotInfo,
     ) {
         val port = session.signalingPort
-        val groupOwner = p2pStatus.groupOwnerAddress
-        // 地址优先级是明确的：
-        // 1. 建了 Wi-Fi Direct 组 → 用群主地址（它不依赖任何已有网络）；
-        // 2. 有真的局域网 → 用局域网地址；
-        // 3. 只剩蜂窝 → **不给地址**：那个 IP 对方根本连不到，写进二维码只会让人白扫一次
-        //    （这时该做的是等 Wi-Fi Direct 组建好）。
-        val host = groupOwner ?: localIp.takeIf { hasLan }
+        // 地址取"当前真正可用的那个"：连了 Wi-Fi、或者自己开的热点已就绪，都算有。
+        // 都没有时给不出有效地址 —— 那时二维码内容没有意义，宁可先不出码。
+        val host = localIp.takeIf { hasLan }
         if (port <= 0 || host == null) {
             null
         } else {
             CastLink.encode(
-                CastTarget(host, port, code, deviceName, viaWifiDirect = groupOwner != null),
+                CastTarget(
+                    host = host,
+                    port = port,
+                    code = code,
+                    deviceName = deviceName,
+                    // 热点凭证随码走：对方一扫自动连，不用认名字、不用输密码
+                    hotspotSsid = hotspotInfo?.ssid,
+                    hotspotPassword = hotspotInfo?.password,
+                ),
             )
         }
     }
@@ -253,12 +269,19 @@ fun ReceiverContent(onFullscreenChange: (Boolean) -> Unit = {}) {
      * （`setWifiEnabled` 只对系统应用有效）。能做到的极限就是把开关递到主人面前。
      */
     LaunchedEffect(hasLan) {
-        if (!hasLan) {
-            val wifi = context.applicationContext
-                .getSystemService(Context.WIFI_SERVICE) as? WifiManager
-            if (wifi?.isWifiEnabled != true) {
-                launchWifiPanel(context)
-            }
+        if (hasLan) {
+            // 已经有网络了就不需要热点，把它还回去（别白占着射频）
+            if (hotspot.running) hotspot.stop()
+            return@LaunchedEffect
+        }
+        // 一个共同网络都没有 —— 这是唯一能建立链路的办法。
+        // 热点要靠 Wi-Fi 射频，所以先确认开关是开的；关着就把系统面板推出来。
+        val wifi = context.applicationContext
+            .getSystemService(Context.WIFI_SERVICE) as? WifiManager
+        if (wifi?.isWifiEnabled != true) {
+            launchWifiPanel(context)
+        } else {
+            hotspot.start { info, _ -> hotspotInfo = info }
         }
     }
 
@@ -317,6 +340,7 @@ fun ReceiverContent(onFullscreenChange: (Boolean) -> Unit = {}) {
         onDispose {
             networkWatcher.stop()
             responder.stop()
+            hotspot.stop()
             p2p.stop()
             session.detachRenderer()
             renderer?.let { view -> runCatching { view.release() } }
@@ -377,7 +401,10 @@ fun ReceiverContent(onFullscreenChange: (Boolean) -> Unit = {}) {
                     deviceName = deviceName,
                     qr = qrImage,
                     preparingHint = null,
-                    statusLine = diagnostics.line(),
+                    // 状态行要带上**本机地址与端口**：真机没有 adb，
+                    // 出问题时主人能念出来的就只有这行字。缺了它等于没线索。
+                    statusLine = "本机 ${LocalAddress.summary()} · 端口 ${session.signalingPort} · " +
+                        diagnostics.line(),
                     modifier = Modifier.align(Alignment.Center),
                 )
             }
@@ -592,11 +619,12 @@ private fun ConnectionCard(
                 color = Color(0xFFB0B0B0),
             )
         } else {
-            // 还没有可用的地址（多半是还没连上 Wi-Fi）。
-            // 这时候**最忌讳留一片空白、或者含糊地说"正在准备"** ——
-            // 主人会干等。直接把该做的事说清楚。
+            // 还没有可用的地址（就是这一台还没连上网络）。
+            //
+            // 措辞要准：二维码里装的是**本机地址**，所以它只取决于**这一台**有没有网络，
+            // 跟对方连不连毫无关系 —— 写成"两台都要连"会让人白折腾。
             Text(
-                text = preparingHint ?: "两台设备连同一个 Wi-Fi 后\n这里会出现二维码",
+                text = preparingHint ?: "连上 Wi-Fi 后\n这里会出现二维码",
                 modifier = Modifier.padding(vertical = 12.dp),
                 style = MaterialTheme.typography.bodyMedium,
                 color = Color(0xFFFF9F0A),

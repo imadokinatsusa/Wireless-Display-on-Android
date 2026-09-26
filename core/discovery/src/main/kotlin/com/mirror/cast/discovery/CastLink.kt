@@ -13,6 +13,15 @@ data class CastTarget(
      * 拿到群主地址（`192.168.49.1`）之后才谈得上连接。
      */
     val viaWifiDirect: Boolean = false,
+    /**
+     * 接收端自己开的热点。
+     *
+     * 两台设备连一个共同网络都没有时，靠它建立链路：发送端扫码后**先连这个热点**，
+     * 连上再照常投屏。名字和密码都是系统给接收端生成的，所以必须随码传递 ——
+     * 这样**没有人需要认出热点名、也不用输密码**。
+     */
+    val hotspotSsid: String? = null,
+    val hotspotPassword: String? = null,
 )
 
 /**
@@ -36,11 +45,18 @@ object CastLink {
 
     private const val P2P_KEY = "p2p"
 
+    private const val SSID_KEY = "ssid"
+
+    private const val PASS_KEY = "pass"
+
     fun encode(target: CastTarget): String = buildString {
         append("$SCHEME://${target.host}:${target.port}")
         append("?$CODE_KEY=${ConnectCode.normalize(target.code)}")
         append("&$NAME_KEY=${encodeComponent(target.deviceName)}")
         if (target.viaWifiDirect) append("&$P2P_KEY=1")
+        // 热点凭证：SSID 里常带引号和空格，所以同样要百分号转义
+        target.hotspotSsid?.let { append("&$SSID_KEY=${encodeComponent(it)}") }
+        target.hotspotPassword?.let { append("&$PASS_KEY=${encodeComponent(it)}") }
     }
 
     /**
@@ -68,6 +84,8 @@ object CastLink {
         var code = ""
         var name = ""
         var viaWifiDirect = false
+        var ssid: String? = null
+        var password: String? = null
         query.split('&').forEach { pair ->
             val equals = pair.indexOf('=')
             if (equals <= 0) return@forEach
@@ -77,6 +95,8 @@ object CastLink {
                 CODE_KEY -> code = ConnectCode.normalize(value)
                 NAME_KEY -> name = value
                 P2P_KEY -> viaWifiDirect = value == "1"
+                SSID_KEY -> ssid = value.ifBlank { null }
+                PASS_KEY -> password = value
             }
         }
 
@@ -87,6 +107,8 @@ object CastLink {
             code = code,
             deviceName = name.ifBlank { host },
             viaWifiDirect = viaWifiDirect,
+            hotspotSsid = ssid,
+            hotspotPassword = password,
         )
     }
 
