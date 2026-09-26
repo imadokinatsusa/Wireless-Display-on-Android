@@ -47,6 +47,7 @@ import androidx.core.content.ContextCompat
 import com.mirror.cast.qr.ScanActivity
 import com.mirror.cast.CaptureSpec
 import com.mirror.cast.FailedSession
+import com.mirror.cast.HotspotConnector
 import com.mirror.cast.LocalAddress
 import com.mirror.cast.MirrorService
 import com.mirror.cast.ProbeScanner
@@ -207,7 +208,20 @@ fun SenderContent(lastCrash: String? = null) {
             deviceName = target.deviceName,
             viaWifiDirect = target.viaWifiDirect,
         )
-        if (request.viaWifiDirect) {
+        val ssid = target.hotspotSsid
+        val password = target.hotspotPassword
+        if (ssid != null && password != null) {
+            // 对方没有共同网络，自己开了个热点 —— 先把本机连上去，连上再投。
+            // 热点名和密码是从二维码里带过来的：主人不用认、不用输，
+            // 系统只会弹一次"连接该网络"的确认框。
+            HotspotConnector.connect(
+                context = context,
+                ssid = ssid,
+                password = password,
+                onConnected = { startCast(request) },
+                onFailed = { reason -> scanHint = reason },
+            )
+        } else if (request.viaWifiDirect) {
             // 离线：先建链路，地址等链路好了再定
             pendingP2p = request
             if (p2pGranted) {
@@ -290,6 +304,8 @@ fun SenderContent(lastCrash: String? = null) {
         }
         onDispose {
             p2p.stop()
+            // 撤掉热点连接请求，把流量还给系统默认网络
+            HotspotConnector.disconnect(context)
         }
     }
 
