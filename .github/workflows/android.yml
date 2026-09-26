@@ -62,11 +62,11 @@ jobs:
           path: app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
 
-      # 版本号从 1 起算：历史 Release 已清空，这一版就是 v1.0。
-      # BASE_RUN 是清空时的 run 号，之后每推一次 +0.1。
+      # 版本号从 1.0 起算：历史 Release 已清空，这一版就是第一版。
+      # 基准取"清空之后那一次构建的 run 号"，于是它得到 v1.0，之后 v1.1、v1.2…
       - name: 计算版本号
         id: ver
-        run: echo "minor=$(( ${{ github.run_number }} - 102 ))" >> "$GITHUB_OUTPUT"
+        run: echo "minor=$(( ${{ github.run_number }} - 105 ))" >> "$GITHUB_OUTPUT"
 
       - name: 发布 APK 到 Release（手机可直接下载）
         if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
