@@ -269,8 +269,10 @@ fun ReceiverContent(onFullscreenChange: (Boolean) -> Unit = {}) {
      * （`setWifiEnabled` 只对系统应用有效）。能做到的极限就是把开关递到主人面前。
      */
     LaunchedEffect(hasLan) {
-        if (hasLan) {
-            // 已经有网络了：不需要额外造链路，把之前造的还回去
+        if (LocalAddress.hasExternalLan()) {
+            // 本来就有真网络：不需要额外造链路，把造出来的还回去。
+            // 注意用的是 hasExternalLan 而不是 hasLan —— 后者把 P2P 自己也算"有网络"，
+            // 拿它做拆组判据会让刚建好的组立刻被自己拆掉（踩过）。
             if (hotspot.running) hotspot.stop()
             if (p2pStatus.groupOwnerAddress != null) p2p.stop()
             return@LaunchedEffect

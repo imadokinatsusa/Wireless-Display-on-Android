@@ -89,19 +89,27 @@ object LocalAddress {
             .filterIsInstance<Inet4Address>()
             .filterNot { it.isLoopbackAddress }
             .mapNotNull { it.hostAddress }
-            .filterNot { it.startsWith(P2P_GROUP_PREFIX) }
             .distinct()
     }.getOrNull().orEmpty()
 
     /**
-     * 现在有没有**可用于局域网直连**的地址。
+     * 有没有**不属于 Wi-Fi Direct 群主网段**的局域网地址 —— 也就是"本来就有网络"。
      *
-     * ⚠️ 判断只能看"接口上有没有地址"，**不能看 `ConnectivityManager` 的活动网络** ——
-     * Wi-Fi Direct 的组同样报 `TRANSPORT_WIFI`，建完组会被判成"有局域网了"、
-     * 然后立刻把自己拆掉，表现就是**二维码闪一下就不见了 / Wi-Fi Direct 用不了**（踩过）。
+     * 它只用于一件事：**已经有真网络了，就该把造出来的那条链路还回去**。
+     * 这和 [hasLan] 是两个问题，之前混用一个判据，两头都出过错（踩过）。
+     */
+    fun hasExternalLan(): Boolean = lanAddresses().any { !it.startsWith(P2P_GROUP_PREFIX) }
+
+    /**
+     * 现在有没有**可用的局域网地址**（**含 Wi-Fi Direct 建出来的那条**）。
      *
-     * 蜂窝[接口](CELLULAR_INTERFACE_HINTS)不算，P2P 群主网段也不算；
-     * 而热点（`softap0` 之类）**算** —— 那正是接收端开热点时合法的局域网地址。
+     * 它回答的是"**能不能给出二维码**"，所以门槛要低：有一个像样的地址就算。
+     *
+     * ⚠️ **`192.168.49.x`（P2P 群主）必须算在内** —— 那正是我们专门造出来用的链路；
+     * 把它排除掉的话，建组成功反而被判成"没网络"，二维码死活不出来（踩过）。
+     *
+     * 蜂窝[接口](CELLULAR_INTERFACE_HINTS)不算；热点（`softap0` 之类）算。
+     * 判断只看接口上的地址，**不看 `ConnectivityManager`** —— 后者对 P2P 的态度不可靠。
      */
     fun hasLan(): Boolean = lanAddresses().isNotEmpty()
 
