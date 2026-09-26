@@ -72,10 +72,12 @@ import com.mirror.cast.CaptureSpec
 import com.mirror.cast.LocalAddress
 import com.mirror.cast.MirrorApplication
 import com.mirror.cast.NetworkWatcher
+import com.mirror.cast.ProbeResponder
 import com.mirror.cast.SessionState
 import com.mirror.cast.discovery.CastLink
 import com.mirror.cast.discovery.CastTarget
 import com.mirror.cast.discovery.ConnectCode
+import com.mirror.cast.discovery.ProbeReply
 import com.mirror.cast.p2p.WifiP2pLink
 import com.mirror.cast.qr.QrCode
 import com.mirror.cast.web.ReceiverSession
@@ -107,6 +109,19 @@ fun ReceiverContent(onFullscreenChange: (Boolean) -> Unit = {}) {
     val session = remember(code) { ReceiverSession(runtime = application.runtime, code = code) }
     val deviceName = remember { Build.MODEL ?: "Android" }
 
+    /**
+     * 静默应答对方的探测：对方扫这个端口来找人，比广播可靠得多
+     * （不怕 AP 隔离、也不需要 Wi-Fi 扫描权限），而界面上完全看不到这件事。
+     */
+    val responder = remember(session) {
+        ProbeResponder(scope) {
+            ProbeReply(
+                deviceName = deviceName,
+                signalingPort = session.signalingPort,
+                code = code,
+            )
+        }
+    }
 
     /**
      * Wi-Fi Direct 链路 —— **离线直连的首选**。
@@ -224,6 +239,7 @@ fun ReceiverContent(onFullscreenChange: (Boolean) -> Unit = {}) {
         networkWatcher.start()
         p2p.start()
         session.prepare()
+        responder.start()
         session.start(scope)
     }
 
@@ -300,6 +316,7 @@ fun ReceiverContent(onFullscreenChange: (Boolean) -> Unit = {}) {
     DisposableEffect(session) {
         onDispose {
             networkWatcher.stop()
+            responder.stop()
             p2p.stop()
             session.detachRenderer()
             renderer?.let { view -> runCatching { view.release() } }
