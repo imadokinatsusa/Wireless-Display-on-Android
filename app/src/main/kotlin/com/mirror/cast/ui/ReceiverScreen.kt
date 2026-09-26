@@ -270,18 +270,22 @@ fun ReceiverContent(onFullscreenChange: (Boolean) -> Unit = {}) {
      */
     LaunchedEffect(hasLan) {
         if (hasLan) {
-            // 已经有网络了就不需要热点，把它还回去（别白占着射频）
+            // 已经有网络了：不需要额外造链路，把之前造的还回去
             if (hotspot.running) hotspot.stop()
+            if (p2pStatus.groupOwnerAddress != null) p2p.stop()
             return@LaunchedEffect
         }
-        // 一个共同网络都没有 —— 这是唯一能建立链路的办法。
-        // 热点要靠 Wi-Fi 射频，所以先确认开关是开的；关着就把系统面板推出来。
+        // 一个共同网络都没有 —— 用 **Wi-Fi Direct** 造一条（我们的通信方式是它，不是热点）。
+        // 它要靠 Wi-Fi 射频，所以先确认开关是开的；关着就把系统面板推出来。
         val wifi = context.applicationContext
             .getSystemService(Context.WIFI_SERVICE) as? WifiManager
         if (wifi?.isWifiEnabled != true) {
             launchWifiPanel(context)
+        } else if (p2pGranted) {
+            p2p.start()
+            p2p.createGroup()
         } else {
-            hotspot.start { info, _ -> hotspotInfo = info }
+            p2pPermissionLauncher.launch(p2pPermission)
         }
     }
 
@@ -401,10 +405,12 @@ fun ReceiverContent(onFullscreenChange: (Boolean) -> Unit = {}) {
                     deviceName = deviceName,
                     qr = qrImage,
                     preparingHint = null,
-                    // 状态行要带上**本机地址与端口**：真机没有 adb，
-                    // 出问题时主人能念出来的就只有这行字。缺了它等于没线索。
-                    statusLine = "本机 ${LocalAddress.summary()} · 端口 ${session.signalingPort} · " +
-                        diagnostics.line(),
+                    // 状态行要带上**本机地址、看得见的网络、端口**：真机没有 adb，
+                    // 出问题时主人能念出来的就只有这行字。
+                    // "看得见的网络"尤其关键 —— P2P 链路在不在里面，直接决定媒体能不能起来。
+                    statusLine = "本机 ${LocalAddress.summary()} · " +
+                        "网络 ${LocalAddress.describeNetworks(context)} · " +
+                        "端口 ${session.signalingPort} · " + diagnostics.line(),
                     modifier = Modifier.align(Alignment.Center),
                 )
             }

@@ -109,6 +109,30 @@ object LocalAddress {
     private const val P2P_GROUP_PREFIX = "192.168.49."
 
     /**
+     * 把 `ConnectivityManager` 当前看得见的网络列成一行，例如 `wifi:wlan0,cell:rmnet0`。
+     *
+     * **为什么需要它**：Wi-Fi Direct 建出来的那条 P2P 网络，默认可能**不对普通 App 暴露** ——
+     * 而媒体栈正是靠枚举这些网络来收集候选地址的。所以"建组成功、信令也通、画面却起不来"
+     * 的时候，唯一能判断卡在哪一层的办法，就是看这条链路**到底在不在列表里**。
+     */
+    fun describeNetworks(context: Context): String = runCatching {
+        val manager = context.applicationContext
+            .getSystemService(ConnectivityManager::class.java) ?: return "无 CM"
+        manager.allNetworks.mapNotNull { network ->
+            val capabilities = manager.getNetworkCapabilities(network) ?: return@mapNotNull null
+            val link = manager.getLinkProperties(network) ?: return@mapNotNull null
+            val kind = when {
+                capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> "wifi"
+                capabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> "cell"
+                capabilities.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) -> "eth"
+                capabilities.hasTransport(NetworkCapabilities.TRANSPORT_VPN) -> "vpn"
+                else -> "?"
+            }
+            "$kind:${link.interfaceName ?: "-"}"
+        }.joinToString(",").ifEmpty { "空" }
+    }.getOrDefault("读不到")
+
+    /**
      * 蜂窝数据接口的常见前缀。
      *
      * 这些接口上的地址（多为 `10.x`）对局域网直连毫无意义 —— 对端根本到不了，

@@ -11,6 +11,7 @@ import android.net.wifi.WpsInfo
 import android.net.wifi.p2p.WifiP2pConfig
 import android.net.wifi.p2p.WifiP2pDevice
 import android.net.wifi.p2p.WifiP2pManager
+import android.os.Build
 import android.os.Looper
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -142,8 +143,29 @@ class WifiP2pLink(private val context: Context) {
         val current = channel ?: return
         if (!wifiRadioReady()) return
         _status.update { it.copy(message = "正在建组…") }
-        runCatching { wifiP2p.createGroup(current, actionListener("建组")) }
-            .onFailure { _status.update { status -> status.copy(message = "建组失败：${it.message}") } }
+
+        // Android 10 起可以要求这条 P2P 链路跑在 **5GHz** 上。
+        //
+        // 为什么值得这么做：默认的 2.4GHz 在不少 ROM 上又挤、毛病又多
+        // （周围全是路由器，而不重叠的信道只有 1/6/11 三个），
+        // 换到 5GHz 往往能绕开这些干扰。
+        val config = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            runCatching {
+                WifiP2pConfig.Builder()
+                    .setGroupOperatingBand(WifiP2pConfig.GROUP_OWNER_BAND_5GHZ)
+                    .build()
+            }.getOrNull()
+        } else {
+            null
+        }
+
+        val outcome = if (config != null) {
+            runCatching { wifiP2p.createGroup(current, config, actionListener("建组")) }
+        } else {
+            // 系统版本不够、或这台设备不接受 5GHz 配置：退回默认（2.4GHz），别直接失败
+            runCatching { wifiP2p.createGroup(current, actionListener("建组")) }
+        }
+        outcome.onFailure { _status.update { status -> status.copy(message = "建组失败：${it.message}") } }
     }
 
     /** 发送端：搜索附近的 Wi-Fi Direct 设备。 */
