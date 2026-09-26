@@ -15,6 +15,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import androidx.core.content.ContextCompat
+import com.mirror.cast.discovery.LinkCandidateWalk
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -107,6 +108,9 @@ class WifiP2pLink(private val context: Context) {
      */
     private var pendingFallback: Runnable? = null
 
+    /** 当前这一轮候选走查（纯逻辑，见 core:discovery 的 [LinkCandidateWalk]）。 */
+    private var walk: LinkCandidateWalk<WifiP2pConfig?>? = null
+
     private val _status = MutableStateFlow(P2pStatus())
     val status: StateFlow<P2pStatus> = _status.asStateFlow()
 
@@ -175,15 +179,100 @@ class WifiP2pLink(private val context: Context) {
         if (!wifiRadioReady()) return
         _status.update { it.copy(message = "正在建组…") }
 
-        // 依次尝试：**点名 5GHz 信道 → 只请求 5GHz 频段 → 系统默认（2.4GHz）**。
+        // 候选顺序：**点名 5GHz 信道 → 只请求 5GHz 频段 → 系统默认（2.4GHz）**。
         //
         // 为什么非要"点名信道"这一步：`setGroupOperatingBand(BAND_5GHZ)` 在系统眼里
         // **只是偏好**，很多 ROM 直接忽略它、默不作声地建成 2.4GHz（真机实测就是如此：
         // 建组成功、二维码也出来了，可频段显示 2.4GHz）。而 2.4GHz 的不重叠信道
         // 只有 1/6/11 三个、周围全是路由器，投屏在这种链路上必然丢包、RTT 上两百毫秒，
         // 媒体栈随即降码率 —— 画面既糊又卡。
-        // `setGroupOperatingFrequency` 给的是**具体频率**，比"偏好"硬得多。
-        requestGroup(wifiP2p, current, groupConfigCandidates())
+        //
+        // **"什么时候换下一档"不写在这里**：它归 core:discovery 的 [LinkCandidateWalk]，
+        // 那是纯逻辑、有 JVM 单测 —— 因为这段逻辑在真机上出过的错全在时序上
+        // （"系统接受了请求，组却永远没成型"）。这里只做两件事：
+        // 把候选交出去，把 Android 的回调翻译成它的事件。
+        walk?.stop()
+        lateinit var created: LinkCandidateWalk<WifiP2pConfig?>
+        created = LinkCandidateWalk(
+            candidates = groupConfigCandidates(),
+            timeoutMillis = GROUP_ATTEMPT_TIMEOUT_MILLIS,
+            listener = object : LinkCandidateWalk.Listener<WifiP2pConfig?> {
+
+                override fun startCandidate(candidate: WifiP2pConfig?) {
+                    _status.update {
+                        it.copy(
+                            message = if (candidate != null) {
+                                "建组已发出（已点名 5GHz）"
+                            } else {
+                                "建组已发出（系统默认频段）"
+                            },
+                        )
+                    }
+                    val actionListener = groupActionListener()
+                    val outcome = if (candidate != null) {
+                        runCatching { wifiP2p.createGroup(current, candidate, actionListener) }
+                    } else {
+                        runCatching { wifiP2p.createGroup(current, actionListener) }
+                    }
+                    outcome.onFailure { error ->
+                        // 连"把请求发出去"这一步都失败：当作这一档被拒绝，继续换下一档
+                        created.attemptRejected(error.message ?: "无法发起建组")
+                    }
+                }
+
+                override fun scheduleTimeout(candidate: WifiP2pConfig?, delayMillis: Long) {
+                    cancelPendingFallback()
+                    val task = Runnable { created.timeout() }
+                    pendingFallback = task
+                    mainHandler.postDelayed(task, delayMillis)
+                }
+
+                override fun cancelTimeout() = cancelPendingFallback()
+
+                override fun candidateRejected(candidate: WifiP2pConfig?, reason: String) {
+                    _status.update { it.copy(message = "该频段未被接受（$reason），换下一个…") }
+                }
+
+                override fun candidateUnsuitable(candidate: WifiP2pConfig?) {
+                    _status.update {
+                        it.copy(
+                            message = if (candidate != null) {
+                                "这一档没能建起组，改用下一档…"
+                            } else {
+                                "换下一个候选…"
+                            },
+                        )
+                    }
+                }
+
+                override fun allExhausted() {
+                    _status.update {
+                        it.copy(searching = false, message = "建组失败：所有候选都没能建起组")
+                    }
+                }
+
+                override fun groupFormed(candidate: WifiP2pConfig?) = Unit
+            },
+        )
+        walk = created
+        created.begin()
+    }
+
+    /**
+     * `createGroup` 的回调翻译：把系统的"接受 / 拒绝"喂给走查。
+     *
+     * ⚠️ 只有 `onFailure` 才是"这一档不行"的明确信号；`onSuccess` **只表示"请求被接受了"**，
+     * 组有没有真的起来，得看 `requestConnectionInfo` 报的 `groupFormed`。
+     * 把这两件事混为一谈，就是"组永远建不起来、二维码永远不出现"那次的成因。
+     */
+    private fun groupActionListener() = object : WifiP2pManager.ActionListener {
+        override fun onSuccess() {
+            walk?.attemptAccepted()
+        }
+
+        override fun onFailure(reason: Int) {
+            walk?.attemptRejected(describe(reason))
+        }
     }
 
     /**
@@ -207,99 +296,15 @@ class WifiP2pLink(private val context: Context) {
         return byFrequency + listOfNotNull(byBand) + listOf(null)
     }
 
-    /**
-     * 按顺序尝试候选配置，前一个失败就换下一个。
-     *
-     * 两条真机换来的教训都在这儿：
-     * 1. 系统拒绝时回的是 `onFailure(reason)`，**不是抛异常**；
-     * 2. **`onSuccess()` 只表示"请求已被系统接受"，不等于"组建起来了"** ——
-     *    系统会欣然接受一个它其实建不出来的频段，然后**悄无声息地失败**。
-     *    只认 `onSuccess` 的话，组永远没有、二维码永远不出来，而状态行上
-     *    还写着"建组已发出"（踩过）。所以每个候选都必须配一个**期限**。
-     */
-    private fun requestGroup(
-        wifiP2p: WifiP2pManager,
-        p2pChannel: WifiP2pManager.Channel,
-        remaining: List<WifiP2pConfig?>,
-    ) {
-        val config = remaining.firstOrNull() ?: return
-        val rest = remaining.drop(1)
-        cancelPendingFallback()
+    // 候选之间"什么时候换下一档、什么时候撤期限"的状态机**不在这里** ——
+    // 它搬到了 core:discovery 的 LinkCandidateWalk：纯逻辑、无 Android 依赖，
+    // 于是"接受之后毫无下文""最后一刻才成型"这些真机时序都能在 JVM 上重放。
+    // 这里保留的只有 Android 侧的定时器与状态播报。
 
-        val listener = object : WifiP2pManager.ActionListener {
-            override fun onSuccess() {
-                _status.update {
-                    it.copy(
-                        message = if (config != null) {
-                            "建组已发出（已点名 5GHz）"
-                        } else {
-                            "建组已发出（系统默认频段）"
-                        },
-                    )
-                }
-                scheduleFallback(wifiP2p, p2pChannel, rest, config)
-            }
-
-            override fun onFailure(reason: Int) {
-                cancelPendingFallback()
-                if (rest.isEmpty()) {
-                    _status.update {
-                        it.copy(searching = false, message = "建组失败：${describe(reason)}")
-                    }
-                    return
-                }
-                _status.update { it.copy(message = "该频段未被接受，换下一个…") }
-                requestGroup(wifiP2p, p2pChannel, rest)
-            }
-        }
-
-        val outcome = if (config != null) {
-            runCatching { wifiP2p.createGroup(p2pChannel, config, listener) }
-        } else {
-            runCatching { wifiP2p.createGroup(p2pChannel, listener) }
-        }
-        outcome.onFailure { error ->
-            cancelPendingFallback()
-            if (rest.isEmpty()) {
-                _status.update { status -> status.copy(message = "建组失败：${error.message}") }
-            } else {
-                _status.update { it.copy(message = "该配置不可用，换下一个…") }
-                requestGroup(wifiP2p, p2pChannel, rest)
-            }
-        }
-    }
-
-    /**
-     * 给刚发出的候选设一个期限。
-     *
-     * 到点还没看到 `groupOwnerAddress`，就认定这一档没建成、换下一个 ——
-     * 这是"请求被接受、实际没建成"唯一能兜住的手段。最后一档不设期限：
-     * 它后面已经没有候选可换了。
-     */
-    private fun scheduleFallback(
-        wifiP2p: WifiP2pManager,
-        p2pChannel: WifiP2pManager.Channel,
-        rest: List<WifiP2pConfig?>,
-        config: WifiP2pConfig?,
-    ) {
-        if (rest.isEmpty()) return
-        val task = Runnable {
-            pendingFallback = null
-            if (_status.value.groupOwnerAddress == null) {
-                _status.update {
-                    it.copy(
-                        message = if (config != null) {
-                            "这一档没能建起组，改用下一档…"
-                        } else {
-                            "换下一个候选…"
-                        },
-                    )
-                }
-                requestGroup(wifiP2p, p2pChannel, rest)
-            }
-        }
-        pendingFallback = task
-        mainHandler.postDelayed(task, GROUP_ATTEMPT_TIMEOUT_MILLIS)
+    /** 撤掉当前候选的期限任务（组建成 / 换候选 / 收尾时调用）。 */
+    private fun cancelPendingFallback() {
+        pendingFallback?.let { mainHandler.removeCallbacks(it) }
+        pendingFallback = null
     }
 
     /** 撤掉当前候选的期限任务（组建成 / 换候选 / 收尾时调用）。 */
@@ -427,6 +432,7 @@ class WifiP2pLink(private val context: Context) {
 
     /** 拆组并注销广播。 */
     fun stop() {
+        walk?.stop()
         cancelPendingFallback()
         // 先解绑，再拆组 —— 顺序反了的话，拆完组那个 Network 就找不到了
         unbind()
@@ -467,9 +473,8 @@ class WifiP2pLink(private val context: Context) {
             wifiP2p.requestConnectionInfo(current) { info ->
                 if (info.groupFormed) {
                     val address = info.groupOwnerAddress?.hostAddress
-                    // 组真的起来了 —— 把还在倒计时的"换下一档"任务撤掉，
-                    // 否则它晚一步触发，会把刚建好的组当成没建成。
-                    cancelPendingFallback()
+                    // 组真的起来了 —— 告诉走查：这一档成了，期限不用再等了。
+                    walk?.groupFormed()
                     _status.update {
                         it.copy(
                             groupOwnerAddress = address,
