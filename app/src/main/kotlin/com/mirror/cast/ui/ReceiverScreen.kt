@@ -75,6 +75,7 @@ import com.mirror.cast.MirrorApplication
 import com.mirror.cast.NetworkWatcher
 import com.mirror.cast.ProbeResponder
 import com.mirror.cast.SessionState
+import com.mirror.cast.WifiLowLatencyLock
 import com.mirror.cast.discovery.CastLink
 import com.mirror.cast.discovery.CastTarget
 import com.mirror.cast.discovery.ConnectCode
@@ -368,6 +369,10 @@ fun ReceiverContent(onFullscreenChange: (Boolean) -> Unit = {}) {
     SystemBarsEffect(hidden = fullscreen)
 
     DisposableEffect(session) {
+        // 接收端也把射频钉住：GO 侧一旦进入省电，收帧会被推迟 ——
+        // 表现就是卡顿加延迟暴涨，而链路上其实什么都没坏。
+        val wifiLock = WifiLowLatencyLock(context)
+        wifiLock.acquire()
         onDispose {
             networkWatcher.stop()
             responder.stop()
@@ -377,6 +382,7 @@ fun ReceiverContent(onFullscreenChange: (Boolean) -> Unit = {}) {
             renderer?.let { view -> runCatching { view.release() } }
             renderer = null
             session.shutdown()
+            wifiLock.release()
         }
     }
 

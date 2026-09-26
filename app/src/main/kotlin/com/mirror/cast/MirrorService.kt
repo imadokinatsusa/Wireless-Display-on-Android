@@ -46,6 +46,15 @@ class MirrorService : Service() {
     private var session: SenderSession? = null
     private var projection: MediaProjection? = null
 
+    /**
+     * 投屏期间**不让 Wi-Fi 射频打盹**。
+     *
+     * 省电带来的往返延迟是几百毫秒量级，而媒体栈看到高 RTT 只会做一件事：降码率
+     * （于是画面变糊）。采集与推流都活在这个前台服务里，锁也就挂在这儿 ——
+     * 服务一起一落，锁跟着一起一落。
+     */
+    private val wifiLock by lazy { WifiLowLatencyLock(this) }
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -75,6 +84,8 @@ class MirrorService : Service() {
         return try {
             // ★ 第一步：进入前台。失败就直接放弃采集 —— 顺序错了一定崩
             startForegroundWithType()
+            // 投屏一开始就把射频钉在全速档上：别让省电机制把 RTT 拉起来
+            wifiLock.acquire()
 
             val manager = getSystemService(MediaProjectionManager::class.java)
                 ?: error("系统没有 MediaProjectionManager")
@@ -178,6 +189,8 @@ class MirrorService : Service() {
             SessionRegistry.clear()
         }
         runCatching { ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE) }
+        // 会话结束就把射频锁还回去 —— 别让它跟着进程一直耗电
+        wifiLock.release()
     }
 
     companion object {

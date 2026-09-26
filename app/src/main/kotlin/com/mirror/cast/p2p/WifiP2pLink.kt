@@ -164,56 +164,75 @@ class WifiP2pLink(private val context: Context) {
         if (!wifiRadioReady()) return
         _status.update { it.copy(message = "正在建组…") }
 
-        // Android 10 起可以要求这条 P2P 链路跑在 **5GHz** 上。
+        // 依次尝试：**点名 5GHz 信道 → 只请求 5GHz 频段 → 系统默认（2.4GHz）**。
         //
-        // 为什么值得这么做：默认的 2.4GHz 在不少 ROM 上又挤、毛病又多
-        // （周围全是路由器，而不重叠的信道只有 1/6/11 三个），
-        // 换到 5GHz 往往能绕开这些干扰 —— 2.4GHz 是带不动 1080p 的。
-        val config = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            runCatching {
-                WifiP2pConfig.Builder()
-                    .setGroupOperatingBand(WifiP2pConfig.GROUP_OWNER_BAND_5GHZ)
-                    .build()
-            }.getOrNull()
-        } else {
-            null
-        }
-
-        // ⚠️ 带 5GHz 偏好的那次建组**失败时必须退回默认频段再试一遍**。
-        //
-        // 这个偏好只是"请求"：设备或地区不支持 5GHz P2P 时，系统回的是
-        // `onFailure(reason)`，**不是抛异常**。早先只处理了 Builder 抛异常那一半，
-        // 于是这类设备上组根本建不起来 —— 二维码死活不出来，主人看到的是
-        // "接收端什么都没有"，而失败原因只有"内部错误"四个字。
-        requestGroup(wifiP2p, current, config, allowFallback = config != null)
+        // 为什么非要"点名信道"这一步：`setGroupOperatingBand(BAND_5GHZ)` 在系统眼里
+        // **只是偏好**，很多 ROM 直接忽略它、默不作声地建成 2.4GHz（真机实测就是如此：
+        // 建组成功、二维码也出来了，可频段显示 2.4GHz）。而 2.4GHz 的不重叠信道
+        // 只有 1/6/11 三个、周围全是路由器，投屏在这种链路上必然丢包、RTT 上两百毫秒，
+        // 媒体栈随即降码率 —— 画面既糊又卡。
+        // `setGroupOperatingFrequency` 给的是**具体频率**，比"偏好"硬得多。
+        requestGroup(wifiP2p, current, groupConfigCandidates())
     }
 
     /**
-     * 真正发起建组。
+     * 建组配置候选，**按优先级排列**；最后一项永远是 `null`（系统默认）。
      *
-     * [allowFallback] 为真时，本次失败会**自动改用默认频段重试一次** ——
-     * 5GHz 是偏好而非保证，不能让它成为"建组完全失败"的单点。
+     * 为什么必须留 `null` 兜底：5GHz 在 Wi-Fi Direct 里是**可选能力**，相当多的设备
+     * 的 P2P Group Owner 本来就只支持 2.4GHz。全部尝试失败时至少要能把组建起来 ——
+     * "跑得不够快"远好过"根本连不上"。
+     */
+    private fun groupConfigCandidates(): List<WifiP2pConfig?> {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return listOf(null)
+        val byFrequency = FIVE_GHZ_FREQUENCIES.mapNotNull { mhz ->
+            runCatching { WifiP2pConfig.Builder().setGroupOperatingFrequency(mhz).build() }
+                .getOrNull()
+        }
+        val byBand = runCatching {
+            WifiP2pConfig.Builder()
+                .setGroupOperatingBand(WifiP2pConfig.GROUP_OWNER_BAND_5GHZ)
+                .build()
+        }.getOrNull()
+        return byFrequency + listOfNotNull(byBand) + listOf(null)
+    }
+
+    /**
+     * 按顺序尝试候选配置，前一个失败就换下一个。
+     *
+     * ⚠️ 系统拒绝时回的是 `onFailure(reason)`，**不是抛异常** ——
+     * 早先只处理了 `Builder` 抛异常那一半，于是带 5GHz 偏好的一次失败就直接
+     * "建组失败"，组根本建不起来、二维码死活不出来（踩过）。
      */
     private fun requestGroup(
         wifiP2p: WifiP2pManager,
         p2pChannel: WifiP2pManager.Channel,
-        config: WifiP2pConfig?,
-        allowFallback: Boolean,
+        remaining: List<WifiP2pConfig?>,
     ) {
+        val config = remaining.firstOrNull() ?: return
+        val rest = remaining.drop(1)
+
         val listener = object : WifiP2pManager.ActionListener {
             override fun onSuccess() {
-                _status.update { it.copy(message = "建组已发出") }
+                _status.update {
+                    it.copy(
+                        message = if (config != null) {
+                            "建组已发出（已点名 5GHz）"
+                        } else {
+                            "建组已发出（系统默认频段）"
+                        },
+                    )
+                }
             }
 
             override fun onFailure(reason: Int) {
-                if (allowFallback) {
-                    _status.update { it.copy(message = "5GHz 建组未被接受，改用默认频段重试…") }
-                    requestGroup(wifiP2p, p2pChannel, config = null, allowFallback = false)
-                } else {
+                if (rest.isEmpty()) {
                     _status.update {
                         it.copy(searching = false, message = "建组失败：${describe(reason)}")
                     }
+                    return
                 }
+                _status.update { it.copy(message = "该频段未被接受，换下一个…") }
+                requestGroup(wifiP2p, p2pChannel, rest)
             }
         }
 
@@ -223,11 +242,11 @@ class WifiP2pLink(private val context: Context) {
             runCatching { wifiP2p.createGroup(p2pChannel, listener) }
         }
         outcome.onFailure { error ->
-            if (allowFallback) {
-                _status.update { it.copy(message = "5GHz 配置不可用，改用默认频段重试…") }
-                requestGroup(wifiP2p, p2pChannel, config = null, allowFallback = false)
-            } else {
+            if (rest.isEmpty()) {
                 _status.update { status -> status.copy(message = "建组失败：${error.message}") }
+            } else {
+                _status.update { it.copy(message = "该配置不可用，换下一个…") }
+                requestGroup(wifiP2p, p2pChannel, rest)
             }
         }
     }
@@ -459,5 +478,16 @@ class WifiP2pLink(private val context: Context) {
             "系统报错。先确认 Wi-Fi 开关是打开的（不用连任何网络，但射频必须开着）；" +
                 "另外 Android 13 起还需要授予「附近的设备」权限"
         else -> "错误码 $reason"
+    }
+
+    private companion object {
+        /**
+         * 5GHz 常用信道（MHz）。
+         *
+         * ch36（5180）最通用；ch149（5745）用于 ch36 被占或当地不允许的场合。
+         * **点名具体频率**比"请求频段"硬实 —— 后者常被系统默不作声地忽略成 2.4GHz，
+         * 而 2.4GHz 带 1080p 的投屏必然丢包、掉帧、糊。
+         */
+        val FIVE_GHZ_FREQUENCIES = intArrayOf(5_180, 5_745)
     }
 }

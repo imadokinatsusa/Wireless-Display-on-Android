@@ -23,7 +23,7 @@
 | **CastLink（投屏链接）** | 一段形如 `mirror://地址:端口?code=…&name=…` 的文本，二维码里装的就是它。它把"发现"从**广播**换成**人工传递**：扫码不建立任何连接，真正的连接仍是局域网直连。校验很严（scheme、端口、连接码），扫到无关二维码一律拒绝。 |
 | **CastTarget（投屏目标）** | 从 CastLink 解析出的四项：地址、端口、连接码、设备名。扫码与广播搜索最终都归结成它 —— 后面的授权与建连**共用同一条路径**，扫码不是一个特例分支。 |
 | **Beacon（发现报文）** | 接收端周期性 UDP 广播的小报文：连接码、信令端口、设备名。不加密，只承载建连所需的最小信息。 |
-| **Signaling（信令）** | 交换会话描述与网络候选的通道；本项目走一条**临时 TCP 连接**，且**保持双向**（接收端的画质请求也从这里回去）。 |
+| **Signaling（信令）** | 交换会话描述与网络候选的通道，**只服务于建连之前**。本项目走一条临时 TCP 连接，会话建立后即可关闭。它**不能整体搬进 DataChannel**：要先有 PeerConnection 才能开 DataChannel，而 PeerConnection 又必须先交换 SDP —— 鸡生蛋。 |
 | **SessionDescription（会话描述）** | 媒体协商文本（offer / answer）：编码格式、方向、参数。由媒体栈生成与解析，我们只负责搬运。 |
 | **IceCandidate（网络候选）** | 本机可用于收流/发流的网络地址。局域网内双方只交换本机地址，不依赖任何外网服务。 |
 | **PeerConnection（对等连接）** | 一次会话的媒体栈本体：负责编解码、加密、重传、拥塞控制、抖动缓冲、音画同步。 |
@@ -58,8 +58,12 @@
 
 | 词汇 | 含义 |
 | --- | --- |
-| **WifiMode（同一 Wi-Fi）** | 默认连法：两台设备连同一个 AP，靠 UDP 广播发现彼此。 |
-| **Hotspot（接收端热点）** | 备用连法：**接收端**用 `LocalOnlyHotspot` 开一个仅本地热点，发送端连上来。**开热点的必须是接收端，不能是投屏端** —— 接收端本来就只需"守在那里"，而发送端是最需要往外发数据的一方，让它同时当网关最容易在路由与网络候选上出岔子（AirDroid 的规则也是如此）。多数设备**不能同时连 Wi-Fi 又开热点**，所以它是兜底而非常态。 |
+| **WifiMode（同一 Wi-Fi）** | 有一个共同 AP 时的首选连法：两台设备连同一个 AP。**它不再是"默认"** —— 本项目的常态是两台设备都不连任何 Wi-Fi（见 OfflineLink）。 |
+| **OfflineLink（离线链路）** | 没有路由器、两台设备都不连任何 Wi-Fi 时，由**接收端**造出来的一条直连链路。它是 WifiMode 的**替代**而非补充；M1 用 Wi-Fi Direct 实现。 |
+| **LinkCandidate（链路候选）** | 造离线链路时按优先级依次尝试的一组配置：先点名 5GHz 信道、再请求 5GHz 频段、最后用系统默认。**保留"系统默认"这一档是刻意的** —— 跑得不够快，远好过根本连不上。 |
+| **BandRequest（频段请求）** | 造链路时我们**请求**的频段与信道。它只是偏好，系统可以无视：**请求 5GHz 不等于拿到 5GHz**。 |
+| **ActualBand（实际频段）** | 链路**真正**跑在的信道 —— 只有它决定带宽。它必须被回读并显示在诊断行上：丢包、RTT、延迟**只有配上它才有意义**，否则就是拿着 2.4GHz 的数字去猜 5GHz 的问题（本轮真机踩过）。 |
+| **Hotspot（接收端热点）** | 另一种造离线链路的设想：**接收端**用 `LocalOnlyHotspot` 开一个仅本地热点，发送端连上来。**开热点的必须是接收端，不能是投屏端** —— 接收端本来就只需"守在那里"，而发送端是最需要往外发数据的一方，让它同时当网关最容易在路由与网络候选上出岔子（AirDroid 的规则也是如此）。多数设备**不能同时连 Wi-Fi 又开热点**。**本项目未采用它**：普通 App 无法为它指定频段，且 AP 侧媒体栈候选有盲区 —— 详见 [ADR 0003](docs/adr/0003-why-not-localonlyhotspot.md)。 |
 | **QrDirectConnect（扫码直连）** | 接收端把 CastLink 显示成二维码，发送端扫一下直接建连，**完全绕开 UDP 广播**。专治广播被路由器隔离、热点下搜不到、换网卡后 socket 绑错接口这三种情形；不需要任何服务器。它与"同一 Wi-Fi / 热点"是**正交**的：那两者说的是"数据走哪条链路"，它说的是"怎么找到对方"。 |
 
 ## 可观测性与验收
@@ -86,17 +90,17 @@
 ```
 Sender ──(Beacon 发现)──▶ DiscoveredDevice ─┐
 Sender ──(扫二维码 CastLink)──▶ CastTarget ──┴─▶ 一次投屏请求（授权 → 建连）
-Sender ──(Signaling: offer/answer/candidate, 双向)──▶ Receiver
+Sender ──(Signaling: offer/answer/candidate，仅建连前，临时 TCP)──▶ Receiver
 Sender ──(PeerConnection)──▶ Receiver
    │  VideoTrack ◀── ScreenCapture(MediaProjection)
    │  AudioTrack ◀── PlaybackCapture(AudioPlaybackCapture)
    │                          ▲
-   │                          └── QualityRequest ◀── Receiver（预算之内）
+   │                          └── QualityRequest ◀── Receiver（预算之内，建连后走 DataChannel）
    ▼
 Receiver: PeerConnection ──▶ 画面渲染（ContainerAspect + FitMode + ViewTransform）+ 声音播放
 ```
 
-- **唯一跨端接缝是信令通道**：上层只见"交换会话描述与候选、传递画质请求"，不碰 socket 细节。
+- **跨端接缝只有两条**：建连前的信令通道（交换会话描述与候选），与建连后的 DataChannel（画质请求与状态回传）。上层只见"交换了什么"，不碰 socket 细节。
 - 媒体栈内部（编码、加密、重传、抖动缓冲、音画同步）**不是我们的代码**，不得在这上面叠自研协议。
 - 采集、渲染、注入是适配层，是唯一允许碰 Android 平台 API 的地方。
 - **带宽分工**：发送端定码率上限，接收端在预算内调画质与帧率。
