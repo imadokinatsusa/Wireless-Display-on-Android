@@ -307,12 +307,6 @@ class WifiP2pLink(private val context: Context) {
         pendingFallback = null
     }
 
-    /** 撤掉当前候选的期限任务（组建成 / 换候选 / 收尾时调用）。 */
-    private fun cancelPendingFallback() {
-        pendingFallback?.let { mainHandler.removeCallbacks(it) }
-        pendingFallback = null
-    }
-
     /** 发送端：搜索附近的 Wi-Fi Direct 设备。 */
     fun discover() {
         val wifiP2p = manager ?: return
