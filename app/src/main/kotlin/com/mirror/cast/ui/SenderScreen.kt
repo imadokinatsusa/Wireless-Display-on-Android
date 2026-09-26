@@ -19,7 +19,9 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material.icons.filled.QrCodeScanner
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.Icon
@@ -47,10 +49,13 @@ import com.mirror.cast.CaptureSpec
 import com.mirror.cast.FailedSession
 import com.mirror.cast.LocalAddress
 import com.mirror.cast.MirrorService
+import com.mirror.cast.ProbeScanner
 import com.mirror.cast.p2p.WifiP2pLink
 import com.mirror.cast.QualityAdjustable
 import com.mirror.cast.SessionRegistry
 import com.mirror.cast.discovery.CastLink
+import com.mirror.cast.discovery.ConnectCode
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 /**
@@ -240,6 +245,45 @@ fun SenderContent(lastCrash: String? = null) {
         }
     }
 
+    /**
+     * 扫到的接收端。
+     *
+     * 走的是**主动敲门**（扫那个固定端口），不是广播：广播是"喊"，对方可能听不见
+     * （AP 隔离、过滤组播、换网卡后 socket 绑错接口）；敲门则是能敲开就算数，
+     * 而且不需要 Wi-Fi 扫描权限。
+     */
+    var probed by remember { mutableStateOf<List<ProbedDevice>>(emptyList()) }
+    var scanning by remember { mutableStateOf(false) }
+
+    val runScan: suspend () -> Unit = {
+        val prefixes = ProbeScanner.prefixesFor(LocalAddress.all())
+        if (prefixes.isEmpty()) {
+            probed = emptyList()
+        } else {
+            scanning = true
+            probed = ProbeScanner.scan(prefixes).map { (host, reply) ->
+                ProbedDevice(
+                    host = host,
+                    name = reply.deviceName,
+                    port = reply.signalingPort,
+                    code = reply.code,
+                )
+            }
+            scanning = false
+        }
+    }
+
+    // 自动扫：**间隔刻意拉长**，而且**一旦找到了就停下** ——
+    // 扫描本身很吵（一轮两百多个连接），投屏期间压根不需要继续找人。
+    LaunchedEffect(Unit) {
+        while (true) {
+            if (probed.isEmpty()) {
+                runScan()
+            }
+            delay(SCAN_INTERVAL_MILLIS)
+        }
+    }
+
     DisposableEffect(Unit) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
@@ -322,7 +366,6 @@ fun SenderContent(lastCrash: String? = null) {
                     subtitle = p2pStatus.message
                         ?: scanHint
                         ?: "扫接收端屏幕上的二维码即可连接",
-                    showDivider = false,
                     onClick = {
                         scanHint = null
                         if (cameraGranted) {
@@ -332,6 +375,38 @@ fun SenderContent(lastCrash: String? = null) {
                         }
                     },
                 )
+                // 手动刷新：主人想立刻再找一遍就点它（自动扫的间隔故意留得长）
+                SettingsRow(
+                    icon = Icons.Filled.Refresh,
+                    iconTint = IconTints.green,
+                    title = "刷新设备",
+                    subtitle = when {
+                        scanning -> "正在查找…"
+                        probed.isNotEmpty() -> "找到 ${probed.size} 台"
+                        else -> "在另一台设备上打开本应用、切到「接收」页就行"
+                    },
+                    showDivider = probed.isNotEmpty(),
+                    onClick = { scope.launch { runScan() } },
+                )
+                probed.forEachIndexed { index, device ->
+                    SettingsRow(
+                        icon = Icons.Filled.PhoneAndroid,
+                        iconTint = IconTints.green,
+                        title = device.name,
+                        subtitle = ConnectCode.pretty(device.code),
+                        showDivider = index < probed.lastIndex,
+                        onClick = {
+                            startCast(
+                                CastRequest(
+                                    host = device.host,
+                                    port = device.port,
+                                    code = device.code,
+                                    deviceName = device.name,
+                                ),
+                            )
+                        },
+                    )
+                }
             }
 
             active?.let { session ->
@@ -400,6 +475,27 @@ fun SenderContent(lastCrash: String? = null) {
         }
     }
 }
+
+/**
+ * 扫到的一台接收端。
+ *
+ * 它只承载"往哪儿投"这四件事，和界面上的 [CastRequest] 一一对应 ——
+ * 所以点一下就能直接进投屏流程，不需要任何额外转换。
+ */
+private data class ProbedDevice(
+    val host: String,
+    val name: String,
+    val port: Int,
+    val code: String,
+)
+
+/**
+ * 自动扫描的间隔。
+ *
+ * **刻意留得长**：一轮扫描要敲两百多个地址，太密会白占链路和电量；
+ * 而主人真想立刻找的时候，界面上有「刷新设备」可以马上扫一轮。
+ */
+private const val SCAN_INTERVAL_MILLIS = 8_000L
 
 /**
  * 一次投屏请求。
