@@ -6,7 +6,8 @@ import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
 import android.net.wifi.WifiNetworkSpecifier
-import androidx.core.content.ContextCompat
+import android.os.Handler
+import android.os.Looper
 
 /**
  * 连接接收端开出来的热点。
@@ -76,7 +77,8 @@ object HotspotConnector {
         registered = callback
         // 回调必须回到**主线程**：连上之后要拉录屏授权，那是 Activity 操作 ——
         // 在默认的 Binder 线程上做这件事会被系统直接拒掉。
-        runCatching { manager.requestNetwork(request, ContextCompat.getMainExecutor(context), callback) }
+        // （`requestNetwork` 只提供 Handler 版重载，没有 Executor 版。）
+        runCatching { manager.requestNetwork(request, callback, Handler(Looper.getMainLooper())) }
             .onFailure { onFailed("发起连接失败：${it.message}") }
     }
 
