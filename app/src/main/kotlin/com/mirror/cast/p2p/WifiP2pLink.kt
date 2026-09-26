@@ -113,9 +113,6 @@ class WifiP2pLink(private val context: Context) {
         if (channel == null) {
             channel = wifiP2p.initialize(context, Looper.getMainLooper(), null)
         }
-        // 这里本来想把自己在 Wi-Fi Direct 里的名字改成 `Mirror-xxx`，好让对方一眼认出，
-        // 但 `WifiP2pManager.setDeviceName` 同样是**隐藏 API**（编译期就找不到符号），
-        // 和 requestNetwork / SoftApConfiguration 一个待遇 —— 只能作罢。
         if (!registered) {
             val filter = IntentFilter().apply {
                 addAction(WifiP2pManager.WIFI_P2P_STATE_CHANGED_ACTION)
