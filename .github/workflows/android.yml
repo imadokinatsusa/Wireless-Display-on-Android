@@ -61,16 +61,22 @@ jobs:
           name: mirror-debug-apk
           path: app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
+
+      # 版本号从 1 起算：历史 Release 已清空，这一版就是 v1.0。
+      # BASE_RUN 是清空时的 run 号，之后每推一次 +0.1。
+      - name: 计算版本号
+        id: ver
+        run: echo "minor=$(( ${{ github.run_number }} - 102 ))" >> "$GITHUB_OUTPUT"
+
       - name: 发布 APK 到 Release（手机可直接下载）
         if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: mirror-build-${{ github.run_number }}
-          name: Mirror build #${{ github.run_number }}
+          tag_name: v1.${{ steps.ver.outputs.minor }}
+          name: Mirror v1.${{ steps.ver.outputs.minor }}
           body: |
             自动构建的 debug APK，可直接安装到 Android 手机（需允许安装未知来源应用）。
 
-            当前阶段：切片 01 骨架就绪 —— 工程已切换为 WebRTC 传输与媒体栈，
-            屏幕采集发布与接收端渲染在后续切片落地（见 .scratch/mirror/issues/）。
+            两台设备连同一个 Wi-Fi 时：接收端出二维码，发送端扫码即可投屏。
           files: app/build/outputs/apk/debug/app-debug.apk
           make_latest: true

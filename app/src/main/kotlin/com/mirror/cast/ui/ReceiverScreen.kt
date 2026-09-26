@@ -268,6 +268,17 @@ fun ReceiverContent(onFullscreenChange: (Boolean) -> Unit = {}) {
      * 为什么不能直接替主人打开：Android 10 起**禁止普通 App 开关 Wi-Fi**
      * （`setWifiEnabled` 只对系统应用有效）。能做到的极限就是把开关递到主人面前。
      */
+    // 建组成功后接口地址会变，但 **`ConnectivityManager` 未必通知我们** ——
+    // Wi-Fi Direct 那条网络通常不在它的列表里，所以 `NetworkWatcher` 一声不吭。
+    // 不主动刷新的话，`localIp` 会一直停在建组前的旧值（null 或蜂窝地址），
+    // 二维码就死活不出来（踩过）。所以这里盯着建组结果补一次。
+    LaunchedEffect(p2pStatus.groupOwnerAddress) {
+        if (p2pStatus.groupOwnerAddress != null) {
+            localIp = LocalAddress.ipv4()
+            hasLan = LocalAddress.hasLan()
+        }
+    }
+
     LaunchedEffect(hasLan) {
         if (LocalAddress.hasExternalLan()) {
             // 本来就有真网络：不需要额外造链路，把造出来的还回去。
