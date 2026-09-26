@@ -63,6 +63,15 @@ data class P2pStatus(
             if (mhz >= BAND_5GHZ_FLOOR_MHZ) "5GHz(${mhz}MHz)" else "2.4GHz(${mhz}MHz)"
         }
 
+    /**
+     * 这条链路是不是挤在 2.4GHz 上。
+     *
+     * 2.4GHz 的不重叠信道只有 1/6/11 三个、周围全是路由器 —— 它**带不动 1080p**：
+     * 实测丢包 >5%、RTT >200ms、端到端 150-300ms，画面既糊又卡。
+     * 知道这件事之后就该**主动降一档**，而不是等媒体栈先卡上两轮才自己降。
+     */
+    val isCrowdedBand: Boolean get() = groupFrequencyMhz?.let { it < BAND_5GHZ_FLOOR_MHZ } == true
+
     private companion object {
         /** 4.9GHz 及以上算 5GHz 频段。 */
         const val BAND_5GHZ_FLOOR_MHZ = 4_900

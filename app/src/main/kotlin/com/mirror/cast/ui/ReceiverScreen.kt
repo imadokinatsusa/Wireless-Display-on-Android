@@ -271,6 +271,23 @@ fun ReceiverContent(onFullscreenChange: (Boolean) -> Unit = {}) {
     }
 
     /**
+     * 链路确认挤在 2.4GHz 上时，**主动把画质要到 720p**。
+     *
+     * 按职责划分，"在发送端给的预算之内决定画质与帧率"本来就是接收端的事（见 spec §二）。
+     * 为什么不干等发送端的自动画质：它的判据是"丢包 >6% 或 RTT >250ms **连续两次**"，
+     * 也就是要**先卡上两轮**才肯降 —— 而起播那一小段恰恰是最卡的。
+     * 频段是确定的先天条件，不用等实测就能下结论。
+     */
+    var downgradedForCrowdedBand by remember { mutableStateOf(false) }
+    LaunchedEffect(p2pStatus.isCrowdedBand, state) {
+        if (!p2pStatus.isCrowdedBand || downgradedForCrowdedBand) return@LaunchedEffect
+        if (state !is SessionState.Streaming) return@LaunchedEffect
+        downgradedForCrowdedBand = true
+        qualityName = CaptureSpec.Quality.P720.name
+        session.requestQuality(CaptureSpec.Quality.P720.name, CaptureSpec.DEFAULT_FRAME_RATE)
+    }
+
+    /**
      * 进这一页先把网络准备好，但**不打扰主人、也不留任何痕迹**。
      *
      * 只做一件事：**Wi-Fi 开关关着的时候，把系统的 Wi-Fi 面板推出来**，
@@ -446,7 +463,9 @@ fun ReceiverContent(onFullscreenChange: (Boolean) -> Unit = {}) {
                         // ★ P2P 的**实际频段**必须露出来。建组时请求的 5GHz 只是偏好，
                         // 系统可能默不作声地建在 2.4GHz —— 而丢包、RTT、延迟一起恶化、
                         // 画面既糊又卡的根因往往就是它。看不到频段就只能靠猜。
-                        "P2P ${p2pStatus.bandLabel ?: p2pStatus.message ?: "未建组"} · " +
+                        "P2P ${p2pStatus.bandLabel ?: p2pStatus.message ?: "未建组"}" +
+                        // 2.4GHz 带不动 1080p —— 把出路直接写在主人眼前，别让他自己猜
+                        (if (p2pStatus.isCrowdedBand) "（想更快就连同一个 Wi-Fi）" else "") + " · " +
                         "网络 ${LocalAddress.describeNetworks(context)} · " + diagnostics.line(),
                     modifier = Modifier.align(Alignment.Center),
                 )
