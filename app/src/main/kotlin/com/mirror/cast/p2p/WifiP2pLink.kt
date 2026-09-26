@@ -12,6 +12,7 @@ import android.net.wifi.p2p.WifiP2pConfig
 import android.net.wifi.p2p.WifiP2pDevice
 import android.net.wifi.p2p.WifiP2pManager
 import android.os.Build
+import android.os.Handler
 import android.os.Looper
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -95,6 +96,16 @@ class WifiP2pLink(private val context: Context) {
 
     /** 搜到的设备本体（不只是名字）—— 连接时要用它的 `deviceAddress`。 */
     private var peerDevices: List<WifiP2pDevice> = emptyList()
+
+    private val mainHandler = Handler(Looper.getMainLooper())
+
+    /**
+     * 当前候选的"建组期限"任务。
+     *
+     * 组建成、换下一个候选、以及收尾时都必须把它撤掉 —— 否则一个迟到的任务
+     * 会把已经建好的组当成"没建成"来处理。
+     */
+    private var pendingFallback: Runnable? = null
 
     private val _status = MutableStateFlow(P2pStatus())
     val status: StateFlow<P2pStatus> = _status.asStateFlow()
@@ -199,9 +210,12 @@ class WifiP2pLink(private val context: Context) {
     /**
      * 按顺序尝试候选配置，前一个失败就换下一个。
      *
-     * ⚠️ 系统拒绝时回的是 `onFailure(reason)`，**不是抛异常** ——
-     * 早先只处理了 `Builder` 抛异常那一半，于是带 5GHz 偏好的一次失败就直接
-     * "建组失败"，组根本建不起来、二维码死活不出来（踩过）。
+     * 两条真机换来的教训都在这儿：
+     * 1. 系统拒绝时回的是 `onFailure(reason)`，**不是抛异常**；
+     * 2. **`onSuccess()` 只表示"请求已被系统接受"，不等于"组建起来了"** ——
+     *    系统会欣然接受一个它其实建不出来的频段，然后**悄无声息地失败**。
+     *    只认 `onSuccess` 的话，组永远没有、二维码永远不出来，而状态行上
+     *    还写着"建组已发出"（踩过）。所以每个候选都必须配一个**期限**。
      */
     private fun requestGroup(
         wifiP2p: WifiP2pManager,
@@ -210,6 +224,7 @@ class WifiP2pLink(private val context: Context) {
     ) {
         val config = remaining.firstOrNull() ?: return
         val rest = remaining.drop(1)
+        cancelPendingFallback()
 
         val listener = object : WifiP2pManager.ActionListener {
             override fun onSuccess() {
@@ -222,9 +237,11 @@ class WifiP2pLink(private val context: Context) {
                         },
                     )
                 }
+                scheduleFallback(wifiP2p, p2pChannel, rest, config)
             }
 
             override fun onFailure(reason: Int) {
+                cancelPendingFallback()
                 if (rest.isEmpty()) {
                     _status.update {
                         it.copy(searching = false, message = "建组失败：${describe(reason)}")
@@ -242,6 +259,7 @@ class WifiP2pLink(private val context: Context) {
             runCatching { wifiP2p.createGroup(p2pChannel, listener) }
         }
         outcome.onFailure { error ->
+            cancelPendingFallback()
             if (rest.isEmpty()) {
                 _status.update { status -> status.copy(message = "建组失败：${error.message}") }
             } else {
@@ -249,6 +267,45 @@ class WifiP2pLink(private val context: Context) {
                 requestGroup(wifiP2p, p2pChannel, rest)
             }
         }
+    }
+
+    /**
+     * 给刚发出的候选设一个期限。
+     *
+     * 到点还没看到 `groupOwnerAddress`，就认定这一档没建成、换下一个 ——
+     * 这是"请求被接受、实际没建成"唯一能兜住的手段。最后一档不设期限：
+     * 它后面已经没有候选可换了。
+     */
+    private fun scheduleFallback(
+        wifiP2p: WifiP2pManager,
+        p2pChannel: WifiP2pManager.Channel,
+        rest: List<WifiP2pConfig?>,
+        config: WifiP2pConfig?,
+    ) {
+        if (rest.isEmpty()) return
+        val task = Runnable {
+            pendingFallback = null
+            if (_status.value.groupOwnerAddress == null) {
+                _status.update {
+                    it.copy(
+                        message = if (config != null) {
+                            "这一档没能建起组，改用下一档…"
+                        } else {
+                            "换下一个候选…"
+                        },
+                    )
+                }
+                requestGroup(wifiP2p, p2pChannel, rest)
+            }
+        }
+        pendingFallback = task
+        mainHandler.postDelayed(task, GROUP_ATTEMPT_TIMEOUT_MILLIS)
+    }
+
+    /** 撤掉当前候选的期限任务（组建成 / 换候选 / 收尾时调用）。 */
+    private fun cancelPendingFallback() {
+        pendingFallback?.let { mainHandler.removeCallbacks(it) }
+        pendingFallback = null
     }
 
     /** 发送端：搜索附近的 Wi-Fi Direct 设备。 */
@@ -370,6 +427,7 @@ class WifiP2pLink(private val context: Context) {
 
     /** 拆组并注销广播。 */
     fun stop() {
+        cancelPendingFallback()
         // 先解绑，再拆组 —— 顺序反了的话，拆完组那个 Network 就找不到了
         unbind()
         val wifiP2p = manager
@@ -409,6 +467,9 @@ class WifiP2pLink(private val context: Context) {
             wifiP2p.requestConnectionInfo(current) { info ->
                 if (info.groupFormed) {
                     val address = info.groupOwnerAddress?.hostAddress
+                    // 组真的起来了 —— 把还在倒计时的"换下一档"任务撤掉，
+                    // 否则它晚一步触发，会把刚建好的组当成没建成。
+                    cancelPendingFallback()
                     _status.update {
                         it.copy(
                             groupOwnerAddress = address,
@@ -492,5 +553,14 @@ class WifiP2pLink(private val context: Context) {
         // `mapNotNull`（`IntArray` 只有 `map` / `filter` 这些），写成 `intArrayOf`
         // 会直接编译不过，而且报错会跑到调用处的返回类型上、看着毫不相干 —— CI 上炸过一次。
         val FIVE_GHZ_FREQUENCIES = listOf(5_180, 5_745)
+
+        /**
+         * 一个候选从"发出请求"到"组真的成型"最多等多久。
+         *
+         * 局域网里建组是秒级的事。超过这个点还没看到 `groupOwnerAddress`，
+         * 就认定这一档建不出来、换下一档 —— 宁可慢一点，也不能卡在这儿
+         * 让二维码永远不出现（踩过）。
+         */
+        const val GROUP_ATTEMPT_TIMEOUT_MILLIS = 4_000L
     }
 }
