@@ -436,8 +436,12 @@ fun ReceiverContent(onFullscreenChange: (Boolean) -> Unit = {}) {
                     // 出问题时主人能念出来的就只有这行字。
                     // "看得见的网络"尤其关键 —— P2P 链路在不在里面，直接决定媒体能不能起来。
                     statusLine = "本机 ${LocalAddress.summary()} · " +
-                        "网络 ${LocalAddress.describeNetworks(context)} · " +
-                        "端口 ${session.signalingPort} · " + diagnostics.line(),
+                        "端口 ${session.signalingPort} · " +
+                        // ★ P2P 的**实际频段**必须露出来。建组时请求的 5GHz 只是偏好，
+                        // 系统可能默不作声地建在 2.4GHz —— 而丢包、RTT、延迟一起恶化、
+                        // 画面既糊又卡的根因往往就是它。看不到频段就只能靠猜。
+                        "P2P ${p2pStatus.bandLabel ?: p2pStatus.message ?: "未建组"} · " +
+                        "网络 ${LocalAddress.describeNetworks(context)} · " + diagnostics.line(),
                     modifier = Modifier.align(Alignment.Center),
                 )
             }
