@@ -23,8 +23,11 @@ object LocalAddress {
      * 为什么不直接取第一个：`NetworkInterface` 的枚举顺序**不保证**。
      * 带 VPN、蜂窝、Wi-Fi Direct 接口的设备上，排在最前面的往往不是对端能到达的那个，
      * 于是二维码里就写进一个连不上的地址 —— 表现正是"连接对端失败"（踩过）。
+     *
+     * ⚠️ 用的是 [lanAddresses] 而不是 [all]：后者带 `isUp` 判断，
+     * 在部分 ROM 上会返回空，而**二维码不能因为这种误判就消失**。
      */
-    fun ipv4(): String? = all().maxByOrNull { reachability(it) }
+    fun ipv4(): String? = lanAddresses().maxByOrNull { reachability(it) }
 
     /**
      * 给地址打一个"对端有多可能连上"的分。
@@ -73,7 +76,11 @@ object LocalAddress {
     fun lanAddresses(): List<String> = runCatching {
         NetworkInterface.getNetworkInterfaces()
             .toList()
-            .filter { it.isUp && !it.isLoopback }
+            // ⚠️ 这里**刻意不判 `isUp`**：它在 Android 上出了名地不可靠
+            // （不少 ROM 上恒为 false），而这个函数决定"要不要给二维码" ——
+            // 一旦误判成"没网络"，接收端就什么都不显示（踩过）。
+            // 反正后面还要按接口名和网段筛，误收一个下线的接口也无害。
+            .filterNot { it.isLoopback }
             .filterNot { nic ->
                 val name = nic.name.lowercase()
                 CELLULAR_INTERFACE_HINTS.any { hint -> name.startsWith(hint) }

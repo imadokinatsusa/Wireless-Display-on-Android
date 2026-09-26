@@ -592,11 +592,11 @@ private fun ConnectionCard(
                 color = Color(0xFFB0B0B0),
             )
         } else {
-            // 还没有可用的地址（比如关了 Wi-Fi、Wi-Fi Direct 组还没建好）。
-            // 这时候**最忌讳留一片空白** —— 主人会以为程序坏了。
-            // 必须写清"现在在做什么"或者"为什么没成"。
+            // 还没有可用的地址（多半是还没连上 Wi-Fi）。
+            // 这时候**最忌讳留一片空白、或者含糊地说"正在准备"** ——
+            // 主人会干等。直接把该做的事说清楚。
             Text(
-                text = preparingHint ?: "正在准备连接…",
+                text = preparingHint ?: "两台设备连同一个 Wi-Fi 后\n这里会出现二维码",
                 modifier = Modifier.padding(vertical = 12.dp),
                 style = MaterialTheme.typography.bodyMedium,
                 color = Color(0xFFFF9F0A),
