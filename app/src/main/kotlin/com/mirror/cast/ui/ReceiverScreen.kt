@@ -227,9 +227,12 @@ fun ReceiverContent(onFullscreenChange: (Boolean) -> Unit = {}) {
         hasLan,
         localIp,
         session.signalingPort,
-        hotspotInfo,
+        // remember 具名重载最多 4 个 key，所以第 4 个把"热点状态 + P2P 群主地址"合成一个 Pair：
+        // Pair 是结构相等，key 比较照样准。
+        hotspotInfo to p2pStatus.groupOwnerAddress,
     ) {
         val port = session.signalingPort
+        val p2pAddress = p2pStatus.groupOwnerAddress
         // 地址取"当前真正可用的那个"：连了 Wi-Fi、或者自己开的热点已就绪，都算有。
         // 都没有时给不出有效地址 —— 那时二维码内容没有意义，宁可先不出码。
         val host = localIp.takeIf { hasLan }
@@ -242,6 +245,13 @@ fun ReceiverContent(onFullscreenChange: (Boolean) -> Unit = {}) {
                     port = port,
                     code = code,
                     deviceName = deviceName,
+                    // ★ 装进二维码的是 **Wi-Fi Direct 群主地址** 时，必须打上 `p2p=1`。
+                    //
+                    // 这个标记决定发送端走哪条路：有它才会先去 `discoverPeers` + `connect`
+                    // 加入这个组，再拿群主地址当 host；没有它就直接拿 `192.168.49.1` 去连 ——
+                    // 而那条地址在发送端**加入组之前根本不可达**。
+                    // 表现正是「扫码成功、一直连接中、然后失败」（踩过）。
+                    viaWifiDirect = p2pAddress != null && host == p2pAddress,
                     // 热点凭证随码走：对方一扫自动连，不用认名字、不用输密码
                     hotspotSsid = hotspotInfo?.ssid,
                     hotspotPassword = hotspotInfo?.password,
@@ -296,7 +306,11 @@ fun ReceiverContent(onFullscreenChange: (Boolean) -> Unit = {}) {
             launchWifiPanel(context)
         } else if (p2pGranted) {
             p2p.start()
-            p2p.createGroup()
+            // ⚠️ 只有"还没有组"时才建：建组成功会让 `hasLan` 从 false 翻成 true
+            // （`192.168.49.x` 也算可用的局域网地址），于是**这个 effect 会自己再进来一次**。
+            // 无脑再建一遍的话，系统只会回 BUSY，状态行被写成「建组失败：系统正忙」——
+            // 组明明好好地建着，主人却以为失败了（踩过）。
+            if (p2pStatus.groupOwnerAddress == null) p2p.createGroup()
         } else {
             p2pPermissionLauncher.launch(p2pPermission)
         }
