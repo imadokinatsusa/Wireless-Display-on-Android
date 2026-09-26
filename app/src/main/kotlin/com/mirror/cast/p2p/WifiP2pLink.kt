@@ -11,7 +11,6 @@ import android.net.wifi.WpsInfo
 import android.net.wifi.p2p.WifiP2pConfig
 import android.net.wifi.p2p.WifiP2pDevice
 import android.net.wifi.p2p.WifiP2pManager
-import android.os.Build
 import android.os.Looper
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -114,8 +113,9 @@ class WifiP2pLink(private val context: Context) {
         if (channel == null) {
             channel = wifiP2p.initialize(context, Looper.getMainLooper(), null)
         }
-        // 顺手把自己在 Wi-Fi Direct 里的名字改成带 App 前缀的
-        renameDevice()
+        // 这里本来想把自己在 Wi-Fi Direct 里的名字改成 `Mirror-xxx`，好让对方一眼认出，
+        // 但 `WifiP2pManager.setDeviceName` 同样是**隐藏 API**（编译期就找不到符号），
+        // 和 requestNetwork / SoftApConfiguration 一个待遇 —— 只能作罢。
         if (!registered) {
             val filter = IntentFilter().apply {
                 addAction(WifiP2pManager.WIFI_P2P_STATE_CHANGED_ACTION)
@@ -266,23 +266,6 @@ class WifiP2pLink(private val context: Context) {
         runCatching { wifiP2p.removeGroup(current, null) }
     }
 
-    /**
-     * 把本机在 Wi-Fi Direct 里的设备名改成带 App 前缀的。
-     *
-     * `setDeviceName` 是**公开 API** —— 不像 `requestNetwork`、`SoftApConfiguration`
-     * 那些被系统藏起来的接口，所以这一步能稳稳做到。
-     *
-     * 名字不是装饰：P2P 的设备列表里原本只有**手机型号**，
-     * 两台同型号设备摆在一起根本分不清谁是谁；加上 `Mirror-` 前缀之后，
-     * 对方一眼就知道该连哪一台。
-     */
-    private fun renameDevice() {
-        val wifiP2p = manager ?: return
-        val current = channel ?: return
-        val name = P2P_NAME_PREFIX + (Build.MODEL ?: "Android")
-        runCatching { wifiP2p.setDeviceName(current, name, null) }
-    }
-
     /** 拆组并注销广播。 */
     fun stop() {
         // 先解绑，再拆组 —— 顺序反了的话，拆完组那个 Network 就找不到了
@@ -373,10 +356,5 @@ class WifiP2pLink(private val context: Context) {
             "系统报错。先确认 Wi-Fi 开关是打开的（不用连任何网络，但射频必须开着）；" +
                 "另外 Android 13 起还需要授予「附近的设备」权限"
         else -> "错误码 $reason"
-    }
-
-    private companion object {
-        /** 本机在 Wi-Fi Direct 里的名字前缀 —— 让对方一眼认出这是 Mirror。 */
-        const val P2P_NAME_PREFIX = "Mirror-"
     }
 }

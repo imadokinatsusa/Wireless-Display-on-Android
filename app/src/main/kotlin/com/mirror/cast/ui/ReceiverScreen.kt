@@ -107,7 +107,17 @@ fun ReceiverContent(onFullscreenChange: (Boolean) -> Unit = {}) {
     val application = context.applicationContext as MirrorApplication
     val code = remember { ConnectCode.random() }
     val session = remember(code) { ReceiverSession(runtime = application.runtime, code = code) }
-    val deviceName = remember { Build.MODEL ?: "Android" }
+    /**
+     * 对方看到的设备名。
+     *
+     * 加 `Mirror-` 前缀不是装饰：P2P/局域网里原本只有手机型号，
+     * 两台同型号设备摆在一起根本分不清谁是谁。
+     *
+     * 顺带说一句：系统那个"改 Wi-Fi Direct 设备名"的 `setDeviceName` 是**隐藏 API**，
+     * 普通 App 调不到；但对我们自己的发现协议来说，**报什么名字是我们说了算** ——
+     * 效果一样，还不用求系统。
+     */
+    val deviceName = remember { P2P_NAME_PREFIX + (Build.MODEL ?: "Android") }
 
     /**
      * 静默应答对方的探测：对方扫这个端口来找人，比广播可靠得多
@@ -504,6 +514,9 @@ fun ReceiverContent(onFullscreenChange: (Boolean) -> Unit = {}) {
 
 /** 二维码边长：够对方一眼扫到，又不至于把小屏里的等待卡撑爆。 */
 private val QR_SIZE_DP = 148.dp
+
+/** 对外报出的设备名前缀 —— 让对方在设备列表里一眼认出这是 Mirror。 */
+private const val P2P_NAME_PREFIX = "Mirror-"
 
 /** 闲置的 Wi-Fi Direct 组最多留多久 —— 到点没人连就自动拆，别让它占着射频。 */
 private const val P2P_IDLE_TIMEOUT_MILLIS = 3 * 60 * 1000L
